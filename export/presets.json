@@ -1,0 +1,25 @@
+[
+  {
+    "name": "untitled",
+    "preset": {
+      "__sps": {
+        "Pre-EQ~": {}
+      },
+      "clipNeg": {
+        "value": 0
+      },
+      "clipPos": {
+        "value": 0
+      },
+      "clipType": {
+        "value": 0
+      },
+      "preHighcut": {
+        "value": 0
+      },
+      "preLowcut": {
+        "value": 0
+      }
+    }
+  }
+]
