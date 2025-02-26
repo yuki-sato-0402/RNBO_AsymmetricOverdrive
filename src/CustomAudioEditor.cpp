@@ -56,7 +56,7 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
     label4.setJustificationType(juce::Justification::centred);
 
     addAndMakeVisible(label5);
-    label5.setText ("superHardClip", juce::dontSendNotification);
+    label5.setText ("superHard\nClip", juce::dontSendNotification);
     label5.setJustificationType(juce::Justification::centred);
 
 
@@ -165,7 +165,7 @@ void CustomAudioEditor::resized()
 
     label3.setBounds(sliderX , dial3Slider.getY(), labelWidth ,dial3Slider.getTextBoxHeight() );
     label4.setBounds(sliderX+ labelWidth, dial3Slider.getY(), labelWidth ,dial3Slider.getTextBoxHeight() );
-    label5.setBounds(sliderX+ (labelWidth * 2), dial3Slider.getY(), labelWidth ,dial3Slider.getTextBoxHeight() );
+    label5.setBounds(sliderX+ (labelWidth * 2), dial3Slider.getY() - 15 , labelWidth ,dial3Slider.getTextBoxHeight() * 2);
 
     label6.setBounds(dial4Slider.getX(), dial4Slider.getY(), dial4Slider.getWidth(),dial4Slider.getTextBoxHeight() );
     label7.setBounds(dial5Slider.getX(), dial5Slider.getY(), dial5Slider.getWidth(),dial5Slider.getTextBoxHeight() );
