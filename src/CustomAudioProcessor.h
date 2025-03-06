@@ -32,4 +32,5 @@ private:
     std::atomic<float>* clipTypeParameter  = nullptr;
     std::atomic<float>* clipNegParameter  = nullptr;
     std::atomic<float>* clipPosParameter  = nullptr;
+    std::atomic<float>* MixParameter  = nullptr;
 };

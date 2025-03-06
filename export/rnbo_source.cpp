@@ -75,17 +75,17 @@ namespace RNBO {
 class rnbomatic : public PatcherInterfaceImpl {
 public:
 
-class RNBOSubpatcher_43 : public PatcherInterfaceImpl {
+class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     friend class rnbomatic;
     
     public:
     
-    RNBOSubpatcher_43()
+    RNBOSubpatcher_04()
     {
     }
     
-    ~RNBOSubpatcher_43()
+    ~RNBOSubpatcher_04()
     {
     }
     
@@ -1674,6 +1674,7 @@ void process(
     this->gen_01_perform(
         this->signals[0],
         this->signals[1],
+        this->gen_01_Mix,
         this->gen_01_clipType,
         this->gen_01_clipNeg,
         this->gen_01_clipPos,
@@ -1779,7 +1780,7 @@ Index getPatcherSerial() const {
 void getState(PatcherStateInterface& ) {}
 
 void setState() {
-    this->p_01 = new RNBOSubpatcher_43();
+    this->p_01 = new RNBOSubpatcher_04();
     this->p_01->setEngineAndPatcher(this->getEngine(), this);
     this->p_01->initialize();
     this->p_01->setParameterOffset(this->getParameterOffset(this->p_01));
@@ -1789,9 +1790,10 @@ void getPreset(PatcherStateInterface& preset) {
     preset["__presetid"] = "rnbo";
     this->param_01_getPresetValue(getSubState(preset, "preLowcut"));
     this->param_02_getPresetValue(getSubState(preset, "preHighcut"));
-    this->param_03_getPresetValue(getSubState(preset, "clipType"));
-    this->param_04_getPresetValue(getSubState(preset, "clipNeg"));
-    this->param_05_getPresetValue(getSubState(preset, "clipPos"));
+    this->param_03_getPresetValue(getSubState(preset, "Mix"));
+    this->param_04_getPresetValue(getSubState(preset, "clipType"));
+    this->param_05_getPresetValue(getSubState(preset, "clipNeg"));
+    this->param_06_getPresetValue(getSubState(preset, "clipPos"));
     this->p_01->getPreset(getSubState(getSubState(preset, "__sps"), "Pre-EQ~"));
 }
 
@@ -1799,9 +1801,10 @@ void setPreset(MillisecondTime time, PatcherStateInterface& preset) {
     this->updateTime(time);
     this->param_01_setPresetValue(getSubState(preset, "preLowcut"));
     this->param_02_setPresetValue(getSubState(preset, "preHighcut"));
-    this->param_03_setPresetValue(getSubState(preset, "clipType"));
-    this->param_04_setPresetValue(getSubState(preset, "clipNeg"));
-    this->param_05_setPresetValue(getSubState(preset, "clipPos"));
+    this->param_03_setPresetValue(getSubState(preset, "Mix"));
+    this->param_04_setPresetValue(getSubState(preset, "clipType"));
+    this->param_05_setPresetValue(getSubState(preset, "clipNeg"));
+    this->param_06_setPresetValue(getSubState(preset, "clipPos"));
 }
 
 void processTempoEvent(MillisecondTime time, Tempo tempo) {
@@ -1867,9 +1870,14 @@ void setParameterValue(ParameterIndex index, ParameterValue v, MillisecondTime t
         this->param_05_value_set(v);
         break;
         }
+    case 5:
+        {
+        this->param_06_value_set(v);
+        break;
+        }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             this->p_01->setParameterValue(index, v, time);
@@ -1913,9 +1921,13 @@ ParameterValue getParameterValue(ParameterIndex index)  {
         {
         return this->param_05_value;
         }
+    case 5:
+        {
+        return this->param_06_value;
+        }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->getParameterValue(index);
@@ -1934,7 +1946,7 @@ ParameterIndex getNumSignalOutParameters() const {
 }
 
 ParameterIndex getNumParameters() const {
-    return 5 + this->p_01->getNumParameters();
+    return 6 + this->p_01->getNumParameters();
 }
 
 ConstCharPointer getParameterName(ParameterIndex index) const {
@@ -1949,19 +1961,23 @@ ConstCharPointer getParameterName(ParameterIndex index) const {
         }
     case 2:
         {
-        return "clipType";
+        return "Mix";
         }
     case 3:
         {
-        return "clipNeg";
+        return "clipType";
         }
     case 4:
+        {
+        return "clipNeg";
+        }
+    case 5:
         {
         return "clipPos";
         }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->getParameterName(index);
@@ -1983,19 +1999,23 @@ ConstCharPointer getParameterId(ParameterIndex index) const {
         }
     case 2:
         {
-        return "clipType";
+        return "Mix";
         }
     case 3:
         {
-        return "clipNeg";
+        return "clipType";
         }
     case 4:
+        {
+        return "clipNeg";
+        }
+    case 5:
         {
         return "clipPos";
         }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->getParameterId(index);
@@ -2051,7 +2071,7 @@ void getParameterInfo(ParameterIndex index, ParameterInfo * info) const {
             info->type = ParameterTypeNumber;
             info->initialValue = 0;
             info->min = 0;
-            info->max = 2;
+            info->max = 100;
             info->exponent = 1;
             info->steps = 0;
             info->debug = false;
@@ -2070,7 +2090,7 @@ void getParameterInfo(ParameterIndex index, ParameterInfo * info) const {
             info->type = ParameterTypeNumber;
             info->initialValue = 0;
             info->min = 0;
-            info->max = 100;
+            info->max = 2;
             info->exponent = 1;
             info->steps = 0;
             info->debug = false;
@@ -2103,9 +2123,28 @@ void getParameterInfo(ParameterIndex index, ParameterInfo * info) const {
             info->signalIndex = INVALID_INDEX;
             break;
             }
+        case 5:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
         default:
             {
-            index -= 5;
+            index -= 6;
 
             if (index < this->p_01->getNumParameters())
                 this->p_01->getParameterInfo(index, info);
@@ -2122,7 +2161,7 @@ void sendParameter(ParameterIndex index, bool ignoreValue) {
 
 ParameterIndex getParameterOffset(BaseInterface* subpatcher) const {
     if (subpatcher == this->p_01)
-        return 5;
+        return 6;
 
     return 0;
 }
@@ -2143,7 +2182,7 @@ ParameterValue applyStepsToNormalizedParameterValue(ParameterValue normalizedVal
 
 ParameterValue convertToNormalizedParameterValue(ParameterIndex index, ParameterValue value) const {
     switch (index) {
-    case 2:
+    case 3:
         {
         {
             value = (value < 0 ? 0 : (value > 2 ? 2 : value));
@@ -2153,8 +2192,9 @@ ParameterValue convertToNormalizedParameterValue(ParameterIndex index, Parameter
         }
     case 0:
     case 1:
-    case 3:
+    case 2:
     case 4:
+    case 5:
         {
         {
             value = (value < 0 ? 0 : (value > 100 ? 100 : value));
@@ -2164,7 +2204,7 @@ ParameterValue convertToNormalizedParameterValue(ParameterIndex index, Parameter
         }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->convertToNormalizedParameterValue(index, value);
@@ -2178,7 +2218,7 @@ ParameterValue convertFromNormalizedParameterValue(ParameterIndex index, Paramet
     value = (value < 0 ? 0 : (value > 1 ? 1 : value));
 
     switch (index) {
-    case 2:
+    case 3:
         {
         {
             value = (value < 0 ? 0 : (value > 1 ? 1 : value));
@@ -2190,8 +2230,9 @@ ParameterValue convertFromNormalizedParameterValue(ParameterIndex index, Paramet
         }
     case 0:
     case 1:
-    case 3:
+    case 2:
     case 4:
+    case 5:
         {
         {
             value = (value < 0 ? 0 : (value > 1 ? 1 : value));
@@ -2203,7 +2244,7 @@ ParameterValue convertFromNormalizedParameterValue(ParameterIndex index, Paramet
         }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->convertFromNormalizedParameterValue(index, value);
@@ -2235,9 +2276,13 @@ ParameterValue constrainParameterValue(ParameterIndex index, ParameterValue valu
         {
         return this->param_05_value_constrain(value);
         }
+    case 5:
+        {
+        return this->param_06_value_constrain(value);
+        }
     default:
         {
-        index -= 5;
+        index -= 6;
 
         if (index < this->p_01->getNumParameters())
             return this->p_01->constrainParameterValue(index, value);
@@ -2366,7 +2411,7 @@ void param_03_value_set(number v) {
         this->param_03_lastValue = this->param_03_value;
     }
 
-    this->gen_01_clipType_set(v);
+    this->gen_01_Mix_set(v);
 }
 
 void param_04_value_set(number v) {
@@ -2379,7 +2424,7 @@ void param_04_value_set(number v) {
         this->param_04_lastValue = this->param_04_value;
     }
 
-    this->gen_01_clipNeg_set(v);
+    this->gen_01_clipType_set(v);
 }
 
 void param_05_value_set(number v) {
@@ -2390,6 +2435,19 @@ void param_05_value_set(number v) {
     if (this->param_05_value != this->param_05_lastValue) {
         this->getEngine()->presetTouched();
         this->param_05_lastValue = this->param_05_value;
+    }
+
+    this->gen_01_clipNeg_set(v);
+}
+
+void param_06_value_set(number v) {
+    v = this->param_06_value_constrain(v);
+    this->param_06_value = v;
+    this->sendParameter(5, false);
+
+    if (this->param_06_value != this->param_06_lastValue) {
+        this->getEngine()->presetTouched();
+        this->param_06_lastValue = this->param_06_value;
     }
 
     this->gen_01_clipPos_set(v);
@@ -2459,6 +2517,10 @@ void startup() {
         this->scheduleParamInit(4, 0);
     }
 
+    {
+        this->scheduleParamInit(5, 0);
+    }
+
     this->processParamInitEvents();
 }
 
@@ -2483,6 +2545,15 @@ void p_01_in4_number_set(number v) {
 }
 
 static number param_03_value_constrain(number v) {
+    v = (v > 100 ? 100 : (v < 0 ? 0 : v));
+    return v;
+}
+
+void gen_01_Mix_set(number v) {
+    this->gen_01_Mix = v;
+}
+
+static number param_04_value_constrain(number v) {
     v = (v > 2 ? 2 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2491,7 +2562,7 @@ void gen_01_clipType_set(number v) {
     this->gen_01_clipType = v;
 }
 
-static number param_04_value_constrain(number v) {
+static number param_05_value_constrain(number v) {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2500,7 +2571,7 @@ void gen_01_clipNeg_set(number v) {
     this->gen_01_clipNeg = v;
 }
 
-static number param_05_value_constrain(number v) {
+static number param_06_value_constrain(number v) {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2526,6 +2597,7 @@ void p_01_perform(
 void gen_01_perform(
     const Sample * in1,
     const Sample * in2,
+    number Mix,
     number clipType,
     number clipNeg,
     number clipPos,
@@ -2677,10 +2749,10 @@ void gen_01_perform(
             mixed2R_3 = hardClipValR_47 + (clipType - 1) * (superhardClipValR_73 - hardClipValR_47);
         }
 
-        number expr_1_74 = mixed1L_0 + mixed2L_1;
-        number expr_2_75 = mixed1R_2 + mixed2R_3;
-        out1[(Index)i] = expr_1_74;
+        number expr_1_74 = in1[(Index)i] + Mix / (number)100 * (mixed1L_0 + mixed2L_1 - in1[(Index)i]);
+        number expr_2_75 = in2[(Index)i] + Mix / (number)100 * (mixed1R_2 + mixed2R_3 - in2[(Index)i]);
         out2[(Index)i] = expr_2_75;
+        out1[(Index)i] = expr_1_74;
     }
 }
 
@@ -2744,6 +2816,17 @@ void param_05_setPresetValue(PatcherStateInterface& preset) {
         return;
 
     this->param_05_value_set(preset["value"]);
+}
+
+void param_06_getPresetValue(PatcherStateInterface& preset) {
+    preset["value"] = this->param_06_value;
+}
+
+void param_06_setPresetValue(PatcherStateInterface& preset) {
+    if ((bool)(stateIsEmpty(preset)))
+        return;
+
+    this->param_06_value_set(preset["value"]);
 }
 
 Index globaltransport_getSampleOffset(MillisecondTime time) {
@@ -2975,6 +3058,7 @@ void assign_defaults()
     p_01_target = 0;
     gen_01_in1 = 0;
     gen_01_in2 = 0;
+    gen_01_Mix = 0;
     gen_01_clipType = 0;
     gen_01_clipNeg = 0;
     gen_01_clipPos = 0;
@@ -2983,6 +3067,7 @@ void assign_defaults()
     param_03_value = 0;
     param_04_value = 0;
     param_05_value = 0;
+    param_06_value = 0;
     _currentTime = 0;
     audioProcessSampleCount = 0;
     sampleOffsetIntoNextAudioBuffer = 0;
@@ -3000,6 +3085,7 @@ void assign_defaults()
     param_03_lastValue = 0;
     param_04_lastValue = 0;
     param_05_lastValue = 0;
+    param_06_lastValue = 0;
     globaltransport_tempo = nullptr;
     globaltransport_tempoNeedsReset = false;
     globaltransport_lastTempo = 120;
@@ -3021,6 +3107,7 @@ void assign_defaults()
     number p_01_target;
     number gen_01_in1;
     number gen_01_in2;
+    number gen_01_Mix;
     number gen_01_clipType;
     number gen_01_clipNeg;
     number gen_01_clipPos;
@@ -3029,6 +3116,7 @@ void assign_defaults()
     number param_03_value;
     number param_04_value;
     number param_05_value;
+    number param_06_value;
     MillisecondTime _currentTime;
     SampleIndex audioProcessSampleCount;
     SampleIndex sampleOffsetIntoNextAudioBuffer;
@@ -3045,6 +3133,7 @@ void assign_defaults()
     number param_03_lastValue;
     number param_04_lastValue;
     number param_05_lastValue;
+    number param_06_lastValue;
     signal globaltransport_tempo;
     bool globaltransport_tempoNeedsReset;
     number globaltransport_lastTempo;
@@ -3061,7 +3150,7 @@ void assign_defaults()
     Index isMuted;
     indexlist paramInitIndices;
     indexlist paramInitOrder;
-    RNBOSubpatcher_43* p_01;
+    RNBOSubpatcher_04* p_01;
 
 };
 

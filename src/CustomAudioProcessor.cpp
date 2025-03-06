@@ -44,7 +44,9 @@ CustomAudioProcessor::CustomAudioProcessor(
         std::make_unique<juce::AudioParameterFloat>(ParameterID { "clipNeg",  1}, "clipNeg",
         juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f),
         std::make_unique<juce::AudioParameterFloat>(ParameterID { "clipPos",  1}, "clipPos",
-        juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f)
+        juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f),
+        std::make_unique<juce::AudioParameterFloat>(ParameterID { "Mix",  1}, "Mix",
+          juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f)
     }
   );
   if (!parameters){
@@ -92,10 +94,14 @@ CustomAudioProcessor::CustomAudioProcessor(
         clipNegParameter = parameters->getRawParameterValue("clipNeg");
         parameters->addParameterListener("clipNeg", this);
         rnboObject.setParameterValue(i, *clipNegParameter);  // RNBO に適用
-      }else{
+      }else if(paramID == "clipPos"){
         clipPosParameter = parameters->getRawParameterValue("clipPos");
         parameters->addParameterListener("clipPos", this);
         rnboObject.setParameterValue(i, *clipPosParameter);  // RNBO に適用
+      }else{
+        MixParameter = parameters->getRawParameterValue("Mix");
+        parameters->addParameterListener("Mix", this);
+        rnboObject.setParameterValue(i, *MixParameter);  // RNBO に適用
       }
 
 
@@ -142,6 +148,9 @@ void CustomAudioProcessor::parameterChanged(const juce::String& parameterID, flo
     }else if(parameterID == "clipPos"){
       RNBO::ParameterIndex index = rnboObject.getParameterIndexForID("clipPos");
       rnboObject.setParameterValue(index, newValue);
+    }else{
+      RNBO::ParameterIndex index = rnboObject.getParameterIndexForID("Mix");
+      rnboObject.setParameterValue(index, newValue);
     }
 }
 
@@ -157,6 +166,7 @@ CustomAudioProcessor::~CustomAudioProcessor()
         parameters->removeParameterListener("clipType", this);
         parameters->removeParameterListener("clipNeg", this);
         parameters->removeParameterListener("clipPos", this);
+        parameters->removeParameterListener("Mix", this);
     }
 }
 

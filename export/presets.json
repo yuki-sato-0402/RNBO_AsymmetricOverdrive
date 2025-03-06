@@ -2,17 +2,20 @@
   {
     "name": "untitled",
     "preset": {
+      "Mix": {
+        "value": 0
+      },
       "__sps": {
         "Pre-EQ~": {}
       },
       "clipNeg": {
-        "value": 0
+        "value": 99
       },
       "clipPos": {
-        "value": 0
+        "value": 91
       },
       "clipType": {
-        "value": 0
+        "value": 2
       },
       "preHighcut": {
         "value": 0

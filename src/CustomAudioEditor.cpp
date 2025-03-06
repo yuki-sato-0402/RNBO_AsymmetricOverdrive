@@ -8,11 +8,23 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
 {
     // ルック＆フィールの設定
     greyLookAndFeel.setColourScheme(juce::LookAndFeel_V4::getGreyColourScheme());
+
+    // デバッグ: vts の state を確認
+    DBG("vts.state: " + valueTreeState.state.toXmlString());
+
+    addAndMakeVisible(dial0Slider);
+    dial0Attachment.reset (new SliderAttachment (valueTreeState, "Mix", dial0Slider));
+    dial0Slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+    dial0Slider.setTextValueSuffix (" %");     
+    dial0Slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, dial0Slider.getTextBoxWidth(), dial0Slider.getTextBoxHeight());
+    dial0Slider.setLookAndFeel(&greyLookAndFeel);
+
+    addAndMakeVisible(label0);
+    label0.setText ("Mix", juce::dontSendNotification);
+    label0.setJustificationType(juce::Justification::centred);
     
     //Mix
     addAndMakeVisible(dial1Slider);
-    // デバッグ: vts の state を確認
-    DBG("vts.state: " + valueTreeState.state.toXmlString());
     std::cout << "preLowcut" << std::endl;
     //スライダーひAPVTSのパラメータを紐づけます。
     dial1Attachment.reset (new SliderAttachment (valueTreeState, "preLowcut", dial1Slider));
@@ -25,7 +37,7 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
     label1.setText ("preLowCut", juce::dontSendNotification);
     label1.setJustificationType(juce::Justification::centred);
     
-    //All-pass Filter
+    //preHighcut
     addAndMakeVisible(dial2Slider);
     std::cout << "preHighcut" << std::endl;
     dial2Attachment.reset (new SliderAttachment (valueTreeState, "preHighcut", dial2Slider));
@@ -106,7 +118,7 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
         if (syncEnabled)
         dial4Slider.setValue(dial5Slider.getValue(),juce::sendNotificationAsync);
     };
-    setSize(250, 500);
+    setSize(250, 700);
 }
 
 CustomAudioEditor::~CustomAudioEditor()
@@ -127,48 +139,40 @@ void CustomAudioEditor::paint (Graphics& g)
 
 void CustomAudioEditor::resized()
 {
-    auto border = 6;
     auto area = getLocalBounds();
+    const int componentWidth1 = (area.getWidth() - 30) / 2;
+    const int componentHeight = area.getHeight() / 8;
+    const int padding = 10;        
     
-    
-    // コンポーネントの配置
-    int itemHeight = area.getHeight() / 6;
-    int dial3pos = area.getWidth();
-    
-    auto topDialArea = area.removeFromTop(itemHeight * 2);
-    dial1Slider.setBounds(topDialArea.removeFromLeft(getWidth() / 2));
-    dial2Slider.setBounds(topDialArea);
+    dial0Slider.setBounds(padding, 0 ,  componentWidth1 , componentHeight * 2);
+
+    dial1Slider.setBounds(padding, dial0Slider.getBottom(),  componentWidth1 , componentHeight * 2);
+    dial2Slider.setBounds(dial1Slider.getRight() + padding, dial0Slider.getBottom() , componentWidth1, componentHeight * 2);
     
     // スライダーの領域
-    auto sliderArea = area.removeFromTop(itemHeight);
-    dial3Slider.setBounds(sliderArea.reduced(20, 0).translated(0, 20)); // 少し余白を入れる
+    dial3Slider.setBounds(padding, dial2Slider.getBottom() + 20,  componentWidth1 * 2 , componentHeight );
 
     // トグルボタンの領域
-    auto toggleArea = area.removeFromTop(itemHeight);
-    syncButton.setBounds(toggleArea.reduced(20, 0));
+    syncButton.setBounds(padding, dial3Slider.getBottom()-10,  componentWidth1 * 2 , componentHeight );
+
     
-    // スライダーの位置とサイズを取得
+    dial4Slider.setBounds(padding, syncButton.getBottom() -20,  componentWidth1 , componentHeight * 2);
+    dial5Slider.setBounds(dial1Slider.getRight() + padding, syncButton.getBottom()-20 , componentWidth1, componentHeight * 2);
+    
+    
     int sliderX = dial3Slider.getX();
-    int sliderY = dial3Slider.getY();
-    int sliderWidth = dial3Slider.getWidth();
-    int labelHeight = dial3Slider.getTextBoxHeight();
-    // ラベルの位置をスライダーの上に配置し、3等分
-    int labelWidth = sliderWidth / 3;
+    int labelWidth = dial3Slider.getWidth() / 3;
 
-    // 下部のダイアル2つ
-    auto bottomDialArea = area;
-    dial4Slider.setBounds(bottomDialArea.removeFromLeft(getWidth() / 2));
-    dial5Slider.setBounds(bottomDialArea);
-
-    label1.setBounds(dial1Slider.getX(), dial1Slider.getY(), dial1Slider.getWidth(),dial1Slider.getTextBoxHeight() );
-    label2.setBounds(dial2Slider.getX(), dial2Slider.getY(), dial2Slider.getWidth(),dial2Slider.getTextBoxHeight() );
+    label0.setBounds(dial0Slider.getX(), dial0Slider.getY()+10 , dial0Slider.getWidth(),dial0Slider.getTextBoxHeight() );
+    label1.setBounds(dial1Slider.getX(), dial1Slider.getY()+10 , dial1Slider.getWidth(),dial1Slider.getTextBoxHeight() );
+    label2.setBounds(dial2Slider.getX(), dial2Slider.getY()+10 , dial2Slider.getWidth(),dial2Slider.getTextBoxHeight() );
 
     label3.setBounds(sliderX , dial3Slider.getY(), labelWidth ,dial3Slider.getTextBoxHeight() );
     label4.setBounds(sliderX+ labelWidth, dial3Slider.getY(), labelWidth ,dial3Slider.getTextBoxHeight() );
-    label5.setBounds(sliderX+ (labelWidth * 2), dial3Slider.getY() - 15 , labelWidth ,dial3Slider.getTextBoxHeight() * 2);
+    label5.setBounds(sliderX+ (labelWidth * 2), dial3Slider.getY() - 15 , labelWidth + 10 ,dial3Slider.getTextBoxHeight() * 2);
 
-    label6.setBounds(dial4Slider.getX(), dial4Slider.getY(), dial4Slider.getWidth(),dial4Slider.getTextBoxHeight() );
-    label7.setBounds(dial5Slider.getX(), dial5Slider.getY(), dial5Slider.getWidth(),dial5Slider.getTextBoxHeight() );
+    label6.setBounds(dial4Slider.getX(), dial4Slider.getY()+10, dial4Slider.getWidth(),dial4Slider.getTextBoxHeight() );
+    label7.setBounds(dial5Slider.getX(), dial5Slider.getY()+10, dial5Slider.getWidth(),dial5Slider.getTextBoxHeight() );
 }  
 
 void CustomAudioEditor::audioProcessorParameterChanged (AudioProcessor*, int parameterIndex, float value)

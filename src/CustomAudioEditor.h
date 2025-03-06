@@ -19,6 +19,7 @@ private:
     // LookAndFeel クラス
     juce::LookAndFeel_V4 greyLookAndFeel;
     
+    juce::Slider dial0Slider;
     juce::Slider dial1Slider;
     juce::Slider dial2Slider;
     juce::Slider dial3Slider;
@@ -26,7 +27,7 @@ private:
     juce::Slider dial5Slider;
     juce::ToggleButton syncButton; // シンクロスイッチ
     
-
+    juce::Label  label0;
     juce::Label  label1;
     juce::Label  label2;
     juce::Label  label3;
@@ -36,6 +37,7 @@ private:
     juce::Label  label7;
    
     //AudioProcessorValueTreeState::SliderAttachmentのスマートポインタ
+    std::unique_ptr<SliderAttachment> dial0Attachment;
     std::unique_ptr<SliderAttachment> dial1Attachment;
     std::unique_ptr<SliderAttachment> dial2Attachment;
     std::unique_ptr<SliderAttachment> dial3Attachment;
