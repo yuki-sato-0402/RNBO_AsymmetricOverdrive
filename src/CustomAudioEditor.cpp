@@ -130,11 +130,13 @@ CustomAudioEditor::~CustomAudioEditor()
 
 void CustomAudioEditor::paint (Graphics& g)
 {
-    g.fillAll( Colour::greyLevel (0.4f));
-    // // タイトルなどの追加テキスト
-    //g.setColour(juce::Colours::white);
-    //g.setFont(15.0f);
-    //g.drawFittedText("Dial Sync Example", getLocalBounds(), juce::Justification::centredTop, 1);
+   // Get the background color from the midnight scheme
+   auto backgroundColour = juce::LookAndFeel_V4::getGreyColourScheme().getUIColour(juce::LookAndFeel_V4::ColourScheme::UIColour::windowBackground);
+
+   // Fill the entire component with this color
+   g.fillAll(backgroundColour);
+   
+   // Any additional painting code goes here
 }
 
 void CustomAudioEditor::resized()
