@@ -1,10 +1,8 @@
+#include "CustomAudioProcessor.h"
 #include "CustomAudioEditor.h"
 
-CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::CoreObject& rnboObject, juce::AudioProcessorValueTreeState& vts)
-    : AudioProcessorEditor (p)
-    , _audioProcessor(p)
-    , _rnboObject(rnboObject) // 参照メンバーを初期化（必須）
-    , valueTreeState(vts)
+CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProcessorValueTreeState& vts)
+    : AudioProcessorEditor (&p), valueTreeState(vts)// 参照メンバーを初期化（必須）
 {
     // ルック＆フィールの設定
     greyLookAndFeel.setColourScheme(juce::LookAndFeel_V4::getGreyColourScheme());
@@ -105,7 +103,6 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
     syncButton.setToggleState(false, juce::dontSendNotification);
     syncButton.onClick = [this] { syncEnabled = syncButton.getToggleState(); };
 
-    _audioProcessor->addListener(this);
 
     // シンクロ機能の設定
     dial4Slider.onValueChange = [this] {
@@ -119,13 +116,6 @@ CustomAudioEditor::CustomAudioEditor (RNBO::JuceAudioProcessor* const p, RNBO::C
         dial4Slider.setValue(dial5Slider.getValue(),juce::sendNotificationAsync);
     };
     setSize(250, 700);
-}
-
-CustomAudioEditor::~CustomAudioEditor()
-{
-    dial1Slider.setLookAndFeel(nullptr);
-    _audioProcessor->removeListener(this);
-    
 }
 
 void CustomAudioEditor::paint (Graphics& g)
@@ -176,8 +166,3 @@ void CustomAudioEditor::resized()
     label6.setBounds(dial4Slider.getX(), dial4Slider.getY()+10, dial4Slider.getWidth(),dial4Slider.getTextBoxHeight() );
     label7.setBounds(dial5Slider.getX(), dial5Slider.getY()+10, dial5Slider.getWidth(),dial5Slider.getTextBoxHeight() );
 }  
-
-void CustomAudioEditor::audioProcessorParameterChanged (AudioProcessor*, int parameterIndex, float value)
-{
-   
-}
