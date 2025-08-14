@@ -1,6 +1,6 @@
-# Rnbo_AsymmetricOverdrive
+# RNBO_AsymmetricOverdrive
 
-This is a Overdrive using tanh~ and atan~ by Rnbo (Max Msp).
+This is a Overdrive using tanh~ and atan~ by RNBO (Max Msp).
 I have also arranged the code to use the [AudioProcessorValueTreeState](https://docs.juce.com/master/classAudioProcessorValueTreeState.html).
 Built from the [rnbo.example.juce](https://github.com/Cycling74/rnbo.example.juce).  
 
