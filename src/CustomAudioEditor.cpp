@@ -4,11 +4,7 @@
 CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProcessorValueTreeState& vts)
     : AudioProcessorEditor (&p), valueTreeState(vts)// 参照メンバーを初期化（必須）
 {
-    // ルック＆フィールの設定
     greyLookAndFeel.setColourScheme(juce::LookAndFeel_V4::getGreyColourScheme());
-
-    // デバッグ: vts の state を確認
-    DBG("vts.state: " + valueTreeState.state.toXmlString());
 
     addAndMakeVisible(dial0Slider);
     dial0Attachment.reset (new SliderAttachment (valueTreeState, "Mix", dial0Slider));
@@ -21,10 +17,7 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label0.setText ("Mix", juce::dontSendNotification);
     label0.setJustificationType(juce::Justification::centred);
     
-    //Mix
     addAndMakeVisible(dial1Slider);
-    std::cout << "preLowcut" << std::endl;
-    //スライダーひAPVTSのパラメータを紐づけます。
     dial1Attachment.reset (new SliderAttachment (valueTreeState, "preLowcut", dial1Slider));
     dial1Slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     dial1Slider.setTextValueSuffix (" %");     
@@ -35,9 +28,7 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label1.setText ("preLowCut", juce::dontSendNotification);
     label1.setJustificationType(juce::Justification::centred);
     
-    //preHighcut
     addAndMakeVisible(dial2Slider);
-    std::cout << "preHighcut" << std::endl;
     dial2Attachment.reset (new SliderAttachment (valueTreeState, "preHighcut", dial2Slider));
     dial2Slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     dial2Slider.setTextValueSuffix (" %");     
@@ -48,12 +39,9 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label2.setText ("preHighCut", juce::dontSendNotification);
     label2.setJustificationType(juce::Justification::centred);
     
-    //clipType
     addAndMakeVisible(dial3Slider);
-    std::cout << "clipType" << std::endl;
     dial3Attachment.reset (new SliderAttachment (valueTreeState, "clipType", dial3Slider));
     dial3Slider.setSliderStyle(juce::Slider::LinearHorizontal ); 
-    //dial3Slider.setTextValueSuffix (" ms");     
     dial3Slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, dial3Slider.getTextBoxWidth(), dial3Slider.getTextBoxHeight());
     dial3Slider.setLookAndFeel(&greyLookAndFeel);
 
@@ -69,8 +57,6 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label5.setText ("superHard\nClip", juce::dontSendNotification);
     label5.setJustificationType(juce::Justification::centred);
 
-
-    //clipPos
     addAndMakeVisible(dial4Slider);
     std::cout << "clipPos" << std::endl;
     dial4Attachment.reset (new SliderAttachment (valueTreeState, "clipPos", dial4Slider));
@@ -83,7 +69,6 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label6.setText ("clipPositiveSide", juce::dontSendNotification);
     label6.setJustificationType(juce::Justification::centred);
 
-    //clipNeg
     addAndMakeVisible(dial5Slider);
     std::cout << "clipNeg" << std::endl;
     dial5Attachment.reset (new SliderAttachment (valueTreeState, "clipNeg", dial5Slider));
@@ -96,18 +81,14 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     label7.setText ("clipNegativeSide", juce::dontSendNotification);
     label7.setJustificationType(juce::Justification::centred);
 
-    //シンクロスイッチ
     addAndMakeVisible(syncButton);
-    //dial5Slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, dial5Slider.getTextBoxWidth(), dial5Slider.getTextBoxHeight());
     syncButton.setButtonText("Pos & Neg Sync");
     syncButton.setToggleState(false, juce::dontSendNotification);
     syncButton.onClick = [this] { syncEnabled = syncButton.getToggleState(); };
 
 
-    // シンクロ機能の設定
     dial4Slider.onValueChange = [this] {
         if (syncEnabled)
-        //juce::dontSendNotificationフラグを使用してAudioProcessorValueTreeStateへの更新を行う。
         dial5Slider.setValue(dial4Slider.getValue(), juce::sendNotificationAsync);
     };
     
@@ -125,8 +106,6 @@ void CustomAudioEditor::paint (Graphics& g)
 
    // Fill the entire component with this color
    g.fillAll(backgroundColour);
-   
-   // Any additional painting code goes here
 }
 
 void CustomAudioEditor::resized()
@@ -141,13 +120,10 @@ void CustomAudioEditor::resized()
     dial1Slider.setBounds(padding, dial0Slider.getBottom(),  componentWidth1 , componentHeight * 2);
     dial2Slider.setBounds(dial1Slider.getRight() + padding, dial0Slider.getBottom() , componentWidth1, componentHeight * 2);
     
-    // スライダーの領域
     dial3Slider.setBounds(padding, dial2Slider.getBottom() + 20,  componentWidth1 * 2 , componentHeight );
 
-    // トグルボタンの領域
     syncButton.setBounds(padding, dial3Slider.getBottom()-10,  componentWidth1 * 2 , componentHeight );
 
-    
     dial4Slider.setBounds(padding, syncButton.getBottom() -20,  componentWidth1 , componentHeight * 2);
     dial5Slider.setBounds(dial1Slider.getRight() + padding, syncButton.getBottom()-20 , componentWidth1, componentHeight * 2);
     
