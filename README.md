@@ -1,14 +1,16 @@
 # RNBO_AsymmetricOverdrive
+**A versatile Asymmetric Overdrive plugin (VST3 / AU / Standalone)**
 
-This is a Overdrive using tanh~ and atan~ by RNBO (Max Msp).
+This overdrive effect utilizes `tanh~` and `atan~` via RNBO to provide a wide range of distortion characteristics. By allowing positive and negative signal values to be clipped at separate thresholds, it facilitates the generation of even-order harmonics for rich, musical saturation.
 
-Positive and negative values can be clipped at separate thresholds, resulting in the generation of even harmonics.
+## Key Features
+- **Multi-Format Support**: Works as a **VST3 plugin, AU (Audio Unit) plugin, and Standalone application**.
+- **Asymmetric Clipping**: Independent control over positive and negative thresholds to generate even harmonics.
+- **Pre-Clipping EQ**: Built-in high-pass and low-pass filters to shape the input signal before it hits the distortion stage.
+- **JUCE Integration**: Uses `AudioProcessorValueTreeState` for robust parameter management and DAW automation.
 
-I have also arranged the code to use the 
-[AudioProcessorValueTreeState](https://docs.juce.com/master/classAudioProcessorValueTreeState.html).
-Built from the [rnbo.example.juce](https://github.com/Cycling74/rnbo.example.juce).  
-
-For *Getting Started*, please refer to the original repository. Also included in this repository is the C++ program output from RNBO in `export/`. And Max patch is included in `patches/`.
+Built from the [rnbo.example.juce](https://github.com/Cycling74/rnbo.example.juce) template.   
+The C++ source exported from RNBO is in `export/`, and the original Max patch is in `patches/`.
 
 ## Demonstration
 [Youtube<img width="903" alt="overdrive" src="https://github.com/user-attachments/assets/5abd93a9-05c6-4c67-80a3-7d5f351979f4" />](https://youtu.be/sKyrQdIMzz8)
