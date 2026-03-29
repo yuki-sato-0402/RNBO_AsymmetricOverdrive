@@ -4,6 +4,7 @@
 #include "RNBO_BinaryData.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include <juce_audio_utils/juce_audio_utils.h>
 
 class CustomAudioProcessor :public juce::AudioProcessor ,public juce::AudioProcessorValueTreeState::Listener{
 public:
@@ -33,6 +34,8 @@ public:
     void changeProgramName(int index, const juce::String& newName) override;
 
     RNBO::CoreObject& getRnboObject() { return rnboObject; }
+
+    juce::AudioVisualiserComponent visualizer;
 private:
     juce::AudioProcessorValueTreeState parameters;  
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CustomAudioProcessor)

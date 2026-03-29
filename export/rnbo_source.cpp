@@ -56,13 +56,26 @@ B) General Public License Version 3 (GPLv3)
 Details of the GPLv3 license can be found at: https://www.gnu.org/licenses/gpl-3.0.html
 *******************************************************************************************************************/
 
-#include "RNBO_Common.h"
-#include "RNBO_AudioSignal.h"
+#ifdef RNBO_LIB_PREFIX
+#define STR_IMPL(A) #A
+#define STR(A) STR_IMPL(A)
+#define RNBO_LIB_INCLUDE(X) STR(RNBO_LIB_PREFIX/X)
+#else
+#define RNBO_LIB_INCLUDE(X) #X
+#endif // RNBO_LIB_PREFIX
+#ifdef RNBO_INJECTPLATFORM
+#define RNBO_USECUSTOMPLATFORM
+#include RNBO_INJECTPLATFORM
+#endif // RNBO_INJECTPLATFORM
+
+#include RNBO_LIB_INCLUDE(RNBO_Common.h)
+#include RNBO_LIB_INCLUDE(RNBO_AudioSignal.h)
 
 namespace RNBO {
 
 
 #define trunc(x) ((Int)(x))
+#define autoref auto&
 
 #if defined(__GNUC__) || defined(__clang__)
     #define RNBO_RESTRICT __restrict__
@@ -72,8 +85,826 @@ namespace RNBO {
 
 #define FIXEDSIZEARRAYINIT(...) { }
 
-class rnbomatic : public PatcherInterfaceImpl {
+template <class ENGINE = INTERNALENGINE> class rnbomatic : public PatcherInterfaceImpl {
+
+friend class EngineCore;
+friend class Engine;
+friend class MinimalEngine<>;
 public:
+
+rnbomatic()
+: _internalEngine(this)
+{
+}
+
+~rnbomatic()
+{
+    deallocateSignals();
+}
+
+Index getNumMidiInputPorts() const {
+    return 1;
+}
+
+void processMidiEvent(MillisecondTime time, int port, ConstByteArray data, Index length) {
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->ctlin_01_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_02_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_03_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_04_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_05_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_06_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_07_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_08_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+    this->ctlin_09_midihandler(data[0] & 240, (data[0] & 15) + 1, port, data, length);
+}
+
+Index getNumMidiOutputPorts() const {
+    return 0;
+}
+
+void process(
+    const SampleValue * const* inputs,
+    Index numInputs,
+    SampleValue * const* outputs,
+    Index numOutputs,
+    Index n
+) {
+    this->vs = n;
+    this->updateTime(this->getEngine()->getCurrentTime(), (ENGINE*)nullptr, true);
+    SampleValue * out1 = (numOutputs >= 1 && outputs[0] ? outputs[0] : this->dummyBuffer);
+    SampleValue * out2 = (numOutputs >= 2 && outputs[1] ? outputs[1] : this->dummyBuffer);
+    const SampleValue * in1 = (numInputs >= 1 && inputs[0] ? inputs[0] : this->zeroBuffer);
+    const SampleValue * in2 = (numInputs >= 2 && inputs[1] ? inputs[1] : this->zeroBuffer);
+    this->p_01_perform(in1, in2, this->signals[0], this->signals[1], n);
+
+    this->gen_01_perform(
+        this->signals[0],
+        this->signals[1],
+        this->gen_01_clipPos,
+        this->gen_01_clipNeg,
+        this->gen_01_clipType,
+        this->gen_01_feedCoe_up,
+        this->gen_01_feedCoe_down,
+        this->gen_01_foldMode,
+        this->gen_01_Mix,
+        out1,
+        out2,
+        n
+    );
+
+    this->stackprotect_perform(n);
+    this->globaltransport_advance();
+    this->advanceTime((ENGINE*)nullptr);
+    this->audioProcessSampleCount += this->vs;
+}
+
+void prepareToProcess(number sampleRate, Index maxBlockSize, bool force) {
+    RNBO_ASSERT(this->_isInitialized);
+
+    if (this->maxvs < maxBlockSize || !this->didAllocateSignals) {
+        Index i;
+
+        for (i = 0; i < 2; i++) {
+            this->signals[i] = resizeSignal(this->signals[i], this->maxvs, maxBlockSize);
+        }
+
+        this->globaltransport_tempo = resizeSignal(this->globaltransport_tempo, this->maxvs, maxBlockSize);
+        this->globaltransport_state = resizeSignal(this->globaltransport_state, this->maxvs, maxBlockSize);
+        this->zeroBuffer = resizeSignal(this->zeroBuffer, this->maxvs, maxBlockSize);
+        this->dummyBuffer = resizeSignal(this->dummyBuffer, this->maxvs, maxBlockSize);
+        this->didAllocateSignals = true;
+    }
+
+    const bool sampleRateChanged = sampleRate != this->sr;
+    const bool maxvsChanged = maxBlockSize != this->maxvs;
+    const bool forceDSPSetup = sampleRateChanged || maxvsChanged || force;
+
+    if (sampleRateChanged || maxvsChanged) {
+        this->vs = maxBlockSize;
+        this->maxvs = maxBlockSize;
+        this->sr = sampleRate;
+        this->invsr = 1 / sampleRate;
+    }
+
+    this->globaltransport_dspsetup(forceDSPSetup);
+    this->p_01->prepareToProcess(sampleRate, maxBlockSize, force);
+
+    if (sampleRateChanged)
+        this->onSampleRateChanged(sampleRate);
+}
+
+number msToSamps(MillisecondTime ms, number sampleRate) {
+    return ms * sampleRate * 0.001;
+}
+
+MillisecondTime sampsToMs(SampleIndex samps) {
+    return samps * (this->invsr * 1000);
+}
+
+Index getNumInputChannels() const {
+    return 2;
+}
+
+Index getNumOutputChannels() const {
+    return 2;
+}
+
+DataRef* getDataRef(DataRefIndex index)  {
+    switch (index) {
+    default:
+        {
+        return nullptr;
+        }
+    }
+}
+
+DataRefIndex getNumDataRefs() const {
+    return 0;
+}
+
+void processDataViewUpdate(DataRefIndex index, MillisecondTime time) {
+    this->p_01->processDataViewUpdate(index, time);
+}
+
+void initialize() {
+    RNBO_ASSERT(!this->_isInitialized);
+    this->assign_defaults();
+    this->applyState();
+    this->initializeObjects();
+    this->allocateDataRefs();
+    this->startup();
+    this->_isInitialized = true;
+}
+
+void getPreset(PatcherStateInterface& preset) {
+    this->updateTime(this->getEngine()->getCurrentTime(), (ENGINE*)nullptr);
+    preset["__presetid"] = "rnbo";
+    this->param_01_getPresetValue(getSubState(preset, "preLowcut"));
+    this->param_02_getPresetValue(getSubState(preset, "preHighcut"));
+    this->param_03_getPresetValue(getSubState(preset, "foldMode"));
+    this->param_04_getPresetValue(getSubState(preset, "feedCoe_down"));
+    this->param_05_getPresetValue(getSubState(preset, "feedCoe_up"));
+    this->param_06_getPresetValue(getSubState(preset, "Mix"));
+    this->param_07_getPresetValue(getSubState(preset, "clipType"));
+    this->param_08_getPresetValue(getSubState(preset, "clipNeg"));
+    this->param_09_getPresetValue(getSubState(preset, "clipPos"));
+    this->p_01->getPreset(getSubState(getSubState(preset, "__sps"), "Pre-EQ~"));
+}
+
+void setPreset(MillisecondTime time, PatcherStateInterface& preset) {
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->p_01->setPreset(time, getSubState(getSubState(preset, "__sps"), "Pre-EQ~"));
+    this->param_01_setPresetValue(getSubState(preset, "preLowcut"));
+    this->param_02_setPresetValue(getSubState(preset, "preHighcut"));
+    this->param_03_setPresetValue(getSubState(preset, "foldMode"));
+    this->param_04_setPresetValue(getSubState(preset, "feedCoe_down"));
+    this->param_05_setPresetValue(getSubState(preset, "feedCoe_up"));
+    this->param_06_setPresetValue(getSubState(preset, "Mix"));
+    this->param_07_setPresetValue(getSubState(preset, "clipType"));
+    this->param_08_setPresetValue(getSubState(preset, "clipNeg"));
+    this->param_09_setPresetValue(getSubState(preset, "clipPos"));
+}
+
+void setParameterValue(ParameterIndex index, ParameterValue v, MillisecondTime time) {
+    this->updateTime(time, (ENGINE*)nullptr);
+
+    switch (index) {
+    case 0:
+        {
+        this->param_01_value_set(v);
+        break;
+        }
+    case 1:
+        {
+        this->param_02_value_set(v);
+        break;
+        }
+    case 2:
+        {
+        this->param_03_value_set(v);
+        break;
+        }
+    case 3:
+        {
+        this->param_04_value_set(v);
+        break;
+        }
+    case 4:
+        {
+        this->param_05_value_set(v);
+        break;
+        }
+    case 5:
+        {
+        this->param_06_value_set(v);
+        break;
+        }
+    case 6:
+        {
+        this->param_07_value_set(v);
+        break;
+        }
+    case 7:
+        {
+        this->param_08_value_set(v);
+        break;
+        }
+    case 8:
+        {
+        this->param_09_value_set(v);
+        break;
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            this->p_01->setParameterValue(index, v, time);
+
+        break;
+        }
+    }
+}
+
+void processParameterEvent(ParameterIndex index, ParameterValue value, MillisecondTime time) {
+    this->setParameterValue(index, value, time);
+}
+
+void processParameterBangEvent(ParameterIndex index, MillisecondTime time) {
+    this->setParameterValue(index, this->getParameterValue(index), time);
+}
+
+void processNormalizedParameterEvent(ParameterIndex index, ParameterValue value, MillisecondTime time) {
+    this->setParameterValueNormalized(index, value, time);
+}
+
+ParameterValue getParameterValue(ParameterIndex index)  {
+    switch (index) {
+    case 0:
+        {
+        return this->param_01_value;
+        }
+    case 1:
+        {
+        return this->param_02_value;
+        }
+    case 2:
+        {
+        return this->param_03_value;
+        }
+    case 3:
+        {
+        return this->param_04_value;
+        }
+    case 4:
+        {
+        return this->param_05_value;
+        }
+    case 5:
+        {
+        return this->param_06_value;
+        }
+    case 6:
+        {
+        return this->param_07_value;
+        }
+    case 7:
+        {
+        return this->param_08_value;
+        }
+    case 8:
+        {
+        return this->param_09_value;
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->getParameterValue(index);
+
+        return 0;
+        }
+    }
+}
+
+ParameterIndex getNumSignalInParameters() const {
+    return 0;
+}
+
+ParameterIndex getNumSignalOutParameters() const {
+    return 0;
+}
+
+ParameterIndex getNumParameters() const {
+    return 9 + this->p_01->getNumParameters();
+}
+
+ConstCharPointer getParameterName(ParameterIndex index) const {
+    switch (index) {
+    case 0:
+        {
+        return "preLowcut";
+        }
+    case 1:
+        {
+        return "preHighcut";
+        }
+    case 2:
+        {
+        return "foldMode";
+        }
+    case 3:
+        {
+        return "feedCoe_down";
+        }
+    case 4:
+        {
+        return "feedCoe_up";
+        }
+    case 5:
+        {
+        return "Mix";
+        }
+    case 6:
+        {
+        return "clipType";
+        }
+    case 7:
+        {
+        return "clipNeg";
+        }
+    case 8:
+        {
+        return "clipPos";
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->getParameterName(index);
+
+        return "bogus";
+        }
+    }
+}
+
+ConstCharPointer getParameterId(ParameterIndex index) const {
+    switch (index) {
+    case 0:
+        {
+        return "preLowcut";
+        }
+    case 1:
+        {
+        return "preHighcut";
+        }
+    case 2:
+        {
+        return "foldMode";
+        }
+    case 3:
+        {
+        return "feedCoe_down";
+        }
+    case 4:
+        {
+        return "feedCoe_up";
+        }
+    case 5:
+        {
+        return "Mix";
+        }
+    case 6:
+        {
+        return "clipType";
+        }
+    case 7:
+        {
+        return "clipNeg";
+        }
+    case 8:
+        {
+        return "clipPos";
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->getParameterId(index);
+
+        return "bogus";
+        }
+    }
+}
+
+void getParameterInfo(ParameterIndex index, ParameterInfo * info) const {
+    {
+        switch (index) {
+        case 0:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 1:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 2:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 1;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 3:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0.5;
+            info->min = 0;
+            info->max = 0.99;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 4:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0.5;
+            info->min = 0;
+            info->max = 0.99;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 5:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 6:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 2;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 7:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        case 8:
+            {
+            info->type = ParameterTypeNumber;
+            info->initialValue = 0;
+            info->min = 0;
+            info->max = 100;
+            info->exponent = 1;
+            info->steps = 0;
+            info->debug = false;
+            info->saveable = true;
+            info->transmittable = true;
+            info->initialized = true;
+            info->visible = true;
+            info->displayName = "";
+            info->unit = "";
+            info->ioType = IOTypeUndefined;
+            info->signalIndex = INVALID_INDEX;
+            break;
+            }
+        default:
+            {
+            index -= 9;
+
+            if (index < this->p_01->getNumParameters())
+                this->p_01->getParameterInfo(index, info);
+
+            break;
+            }
+        }
+    }
+}
+
+ParameterValue applyStepsToNormalizedParameterValue(ParameterValue normalizedValue, int steps) const {
+    if (steps == 1) {
+        if (normalizedValue > 0) {
+            normalizedValue = 1.;
+        }
+    } else {
+        ParameterValue oneStep = (number)1. / (steps - 1);
+        ParameterValue numberOfSteps = rnbo_fround(normalizedValue / oneStep * 1 / (number)1) * (number)1;
+        normalizedValue = numberOfSteps * oneStep;
+    }
+
+    return normalizedValue;
+}
+
+ParameterValue convertToNormalizedParameterValue(ParameterIndex index, ParameterValue value) const {
+    switch (index) {
+    case 2:
+        {
+        {
+            value = (value < 0 ? 0 : (value > 1 ? 1 : value));
+            ParameterValue normalizedValue = (value - 0) / (1 - 0);
+            return normalizedValue;
+        }
+        }
+    case 6:
+        {
+        {
+            value = (value < 0 ? 0 : (value > 2 ? 2 : value));
+            ParameterValue normalizedValue = (value - 0) / (2 - 0);
+            return normalizedValue;
+        }
+        }
+    case 0:
+    case 1:
+    case 5:
+    case 7:
+    case 8:
+        {
+        {
+            value = (value < 0 ? 0 : (value > 100 ? 100 : value));
+            ParameterValue normalizedValue = (value - 0) / (100 - 0);
+            return normalizedValue;
+        }
+        }
+    case 3:
+    case 4:
+        {
+        {
+            value = (value < 0 ? 0 : (value > 0.99 ? 0.99 : value));
+            ParameterValue normalizedValue = (value - 0) / (0.99 - 0);
+            return normalizedValue;
+        }
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->convertToNormalizedParameterValue(index, value);
+
+        return value;
+        }
+    }
+}
+
+ParameterValue convertFromNormalizedParameterValue(ParameterIndex index, ParameterValue value) const {
+    value = (value < 0 ? 0 : (value > 1 ? 1 : value));
+
+    switch (index) {
+    case 2:
+        {
+        {
+            {
+                return 0 + value * (1 - 0);
+            }
+        }
+        }
+    case 6:
+        {
+        {
+            {
+                return 0 + value * (2 - 0);
+            }
+        }
+        }
+    case 0:
+    case 1:
+    case 5:
+    case 7:
+    case 8:
+        {
+        {
+            {
+                return 0 + value * (100 - 0);
+            }
+        }
+        }
+    case 3:
+    case 4:
+        {
+        {
+            {
+                return 0 + value * (0.99 - 0);
+            }
+        }
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->convertFromNormalizedParameterValue(index, value);
+
+        return value;
+        }
+    }
+}
+
+ParameterValue constrainParameterValue(ParameterIndex index, ParameterValue value) const {
+    switch (index) {
+    case 0:
+        {
+        return this->param_01_value_constrain(value);
+        }
+    case 1:
+        {
+        return this->param_02_value_constrain(value);
+        }
+    case 2:
+        {
+        return this->param_03_value_constrain(value);
+        }
+    case 3:
+        {
+        return this->param_04_value_constrain(value);
+        }
+    case 4:
+        {
+        return this->param_05_value_constrain(value);
+        }
+    case 5:
+        {
+        return this->param_06_value_constrain(value);
+        }
+    case 6:
+        {
+        return this->param_07_value_constrain(value);
+        }
+    case 7:
+        {
+        return this->param_08_value_constrain(value);
+        }
+    case 8:
+        {
+        return this->param_09_value_constrain(value);
+        }
+    default:
+        {
+        index -= 9;
+
+        if (index < this->p_01->getNumParameters())
+            return this->p_01->constrainParameterValue(index, value);
+
+        return value;
+        }
+    }
+}
+
+void processNumMessage(MessageTag tag, MessageTag objectId, MillisecondTime time, number payload) {
+    RNBO_UNUSED(objectId);
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->p_01->processNumMessage(tag, objectId, time, payload);
+}
+
+void processListMessage(
+    MessageTag tag,
+    MessageTag objectId,
+    MillisecondTime time,
+    const list& payload
+) {
+    RNBO_UNUSED(objectId);
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->p_01->processListMessage(tag, objectId, time, payload);
+}
+
+void processBangMessage(MessageTag tag, MessageTag objectId, MillisecondTime time) {
+    RNBO_UNUSED(objectId);
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->p_01->processBangMessage(tag, objectId, time);
+}
+
+MessageTagInfo resolveTag(MessageTag tag) const {
+    switch (tag) {
+
+    }
+
+    auto subpatchResult_0 = this->p_01->resolveTag(tag);
+
+    if (subpatchResult_0)
+        return subpatchResult_0;
+
+    return "";
+}
+
+MessageIndex getNumMessages() const {
+    return 0;
+}
+
+const MessageInfo& getMessageInfo(MessageIndex index) const {
+    switch (index) {
+
+    }
+
+    return NullMessageInfo;
+}
+
+protected:
 
 class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
@@ -82,64 +913,11 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     public:
     
     RNBOSubpatcher_04()
-    {
-    }
+    {}
     
     ~RNBOSubpatcher_04()
     {
-    }
-    
-    virtual rnbomatic* getPatcher() const {
-        return static_cast<rnbomatic *>(_parentPatcher);
-    }
-    
-    rnbomatic* getTopLevelPatcher() {
-        return this->getPatcher()->getTopLevelPatcher();
-    }
-    
-    void cancelClockEvents()
-    {
-        getEngine()->flushClockEvents(this, -1841075377, false);
-        getEngine()->flushClockEvents(this, -281953904, false);
-    }
-    
-    SampleIndex currentsampletime() {
-        return this->audioProcessSampleCount + this->sampleOffsetIntoNextAudioBuffer;
-    }
-    
-    number mstosamps(MillisecondTime ms) {
-        return ms * this->sr * 0.001;
-    }
-    
-    inline number safediv(number num, number denom) {
-        return (denom == 0.0 ? 0.0 : num / denom);
-    }
-    
-    number safepow(number base, number exponent) {
-        return fixnan(rnbo_pow(base, exponent));
-    }
-    
-    number scale(
-        number x,
-        number lowin,
-        number hiin,
-        number lowout,
-        number highout,
-        number pow
-    ) {
-        auto inscale = this->safediv(1., hiin - lowin);
-        number outdiff = highout - lowout;
-        number value = (x - lowin) * inscale;
-    
-        if (pow != 1) {
-            if (value > 0)
-                value = this->safepow(value, pow);
-            else
-                value = -this->safepow(-value, pow);
-        }
-    
-        value = value * outdiff + lowout;
-        return value;
+        deallocateSignals();
     }
     
     Index getNumMidiInputPorts() const {
@@ -160,7 +938,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         Index n
     ) {
         this->vs = n;
-        this->updateTime(this->getEngine()->getCurrentTime());
+        this->updateTime(this->getEngine()->getCurrentTime(), (ENGINE*)nullptr, true);
         SampleValue * out1 = (numOutputs >= 1 && outputs[0] ? outputs[0] : this->dummyBuffer);
         SampleValue * out2 = (numOutputs >= 2 && outputs[1] ? outputs[1] : this->dummyBuffer);
         const SampleValue * in1 = (numInputs >= 1 && inputs[0] ? inputs[0] : this->zeroBuffer);
@@ -178,6 +956,8 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     }
     
     void prepareToProcess(number sampleRate, Index maxBlockSize, bool force) {
+        RNBO_ASSERT(this->_isInitialized);
+    
         if (this->maxvs < maxBlockSize || !this->didAllocateSignals) {
             Index i;
     
@@ -210,50 +990,25 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
             this->onSampleRateChanged(sampleRate);
     }
     
-    void setProbingTarget(MessageTag id) {
-        switch (id) {
-        default:
-            {
-            this->setProbingIndex(-1);
-            break;
-            }
-        }
+    number msToSamps(MillisecondTime ms, number sampleRate) {
+        return ms * sampleRate * 0.001;
     }
     
-    void setProbingIndex(ProbingIndex ) {}
-    
-    Index getProbingChannels(MessageTag outletId) const {
-        RNBO_UNUSED(outletId);
-        return 0;
+    MillisecondTime sampsToMs(SampleIndex samps) {
+        return samps * (this->invsr * 1000);
     }
     
-    Index getIsMuted()  {
-        return this->isMuted;
+    Index getNumInputChannels() const {
+        return 2;
     }
     
-    void setIsMuted(Index v)  {
-        this->isMuted = v;
+    Index getNumOutputChannels() const {
+        return 2;
     }
-    
-    Index getPatcherSerial() const {
-        return 0;
-    }
-    
-    void getState(PatcherStateInterface& ) {}
-    
-    void setState() {}
     
     void getPreset(PatcherStateInterface& ) {}
     
-    void processTempoEvent(MillisecondTime , Tempo ) {}
-    
-    void processTransportEvent(MillisecondTime , TransportState ) {}
-    
-    void processBeatTimeEvent(MillisecondTime , BeatTime ) {}
-    
-    void onSampleRateChanged(double ) {}
-    
-    void processTimeSignatureEvent(MillisecondTime , int , int ) {}
+    void setPreset(MillisecondTime , PatcherStateInterface& ) {}
     
     void setParameterValue(ParameterIndex , ParameterValue , MillisecondTime ) {}
     
@@ -310,14 +1065,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void getParameterInfo(ParameterIndex , ParameterInfo * ) const {}
     
-    void sendParameter(ParameterIndex index, bool ignoreValue) {
-        this->getPatcher()->sendParameter(index + this->parameterOffset, ignoreValue);
-    }
-    
-    void setParameterOffset(ParameterIndex offset) {
-        this->parameterOffset = offset;
-    }
-    
     ParameterValue applyStepsToNormalizedParameterValue(ParameterValue normalizedValue, int steps) const {
         if (steps == 1) {
             if (normalizedValue > 0) {
@@ -361,43 +1108,8 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         }
     }
     
-    void scheduleParamInit(ParameterIndex index, Index order) {
-        this->getPatcher()->scheduleParamInit(index + this->parameterOffset, order);
-    }
-    
-    void processClockEvent(MillisecondTime time, ClockId index, bool hasValue, ParameterValue value) {
-        RNBO_UNUSED(value);
-        RNBO_UNUSED(hasValue);
-        this->updateTime(time);
-    
-        switch (index) {
-        case -1841075377:
-            {
-            this->linetilde_01_target_bang();
-            break;
-            }
-        case -281953904:
-            {
-            this->linetilde_02_target_bang();
-            break;
-            }
-        }
-    }
-    
-    void processOutletAtCurrentTime(EngineLink* , OutletIndex , ParameterValue ) {}
-    
-    void processOutletEvent(
-        EngineLink* sender,
-        OutletIndex index,
-        ParameterValue value,
-        MillisecondTime time
-    ) {
-        this->updateTime(time);
-        this->processOutletAtCurrentTime(sender, index, value);
-    }
-    
     void processNumMessage(MessageTag tag, MessageTag objectId, MillisecondTime time, number payload) {
-        this->updateTime(time);
+        this->updateTime(time, (ENGINE*)nullptr);
     
         switch (tag) {
         case TAG("valin"):
@@ -491,16 +1203,85 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         return 0;
     }
     
-    void fillDataRef(DataRefIndex , DataRef& ) {}
-    
     void processDataViewUpdate(DataRefIndex , MillisecondTime ) {}
     
     void initialize() {
+        RNBO_ASSERT(!this->_isInitialized);
         this->assign_defaults();
-        this->setState();
+        this->applyState();
+        this->_isInitialized = true;
     }
     
     protected:
+    
+    void updateTime(MillisecondTime time, INTERNALENGINE*, bool inProcess = false) {
+    	if (time == TimeNow) time = getTopLevelPatcher()->getPatcherTime();
+    	getTopLevelPatcher()->processInternalEvents(time);
+    	updateTime(time, (EXTERNALENGINE*)nullptr);
+    }
+    
+    RNBOSubpatcher_04* operator->() {
+        return this;
+    }
+    const RNBOSubpatcher_04* operator->() const {
+        return this;
+    }
+    virtual rnbomatic* getPatcher() const {
+        return static_cast<rnbomatic *>(_parentPatcher);
+    }
+    
+    rnbomatic* getTopLevelPatcher() {
+        return this->getPatcher()->getTopLevelPatcher();
+    }
+    
+    void cancelClockEvents()
+    {
+        getEngine()->flushClockEvents(this, -1841075377, false);
+        getEngine()->flushClockEvents(this, -281953904, false);
+    }
+    
+    UInt64 currentsampletime() {
+        return this->audioProcessSampleCount + this->sampleOffsetIntoNextAudioBuffer;
+    }
+    
+    number mstosamps(MillisecondTime ms) {
+        return ms * this->sr * 0.001;
+    }
+    
+    inline number safediv(number num, number denom) {
+        return (denom == 0.0 ? 0.0 : num / denom);
+    }
+    
+    number safepow(number base, number exponent) {
+        return fixnan(rnbo_pow(base, exponent));
+    }
+    
+    number scale(
+        number x,
+        number lowin,
+        number hiin,
+        number lowout,
+        number highout,
+        number pow
+    ) {
+        auto inscale = this->safediv(1., hiin - lowin);
+        number outdiff = highout - lowout;
+        number value = (x - lowin) * inscale;
+    
+        if (pow != 1) {
+            if (value > 0)
+                value = this->safepow(value, pow);
+            else
+                value = -this->safepow(-value, pow);
+        }
+    
+        value = value * outdiff + lowout;
+        return value;
+    }
+    
+    MillisecondTime getPatcherTime() const {
+        return this->_currentTime;
+    }
     
     void numberobj_01_valin_set(number v) {
         this->numberobj_01_value_set(v);
@@ -522,7 +1303,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         this->numberobj_02_value_bang();
     }
     
-    void eventinlet_01_out1_list_set(const list& v) {
+    template<typename LISTTYPE> void eventinlet_01_out1_list_set(const LISTTYPE& v) {
         {
             number converted = (v->length > 0 ? v[0] : 0);
             this->numberobj_02_value_set(converted);
@@ -549,7 +1330,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         this->numberobj_04_value_bang();
     }
     
-    void eventinlet_02_out1_list_set(const list& v) {
+    template<typename LISTTYPE> void eventinlet_02_out1_list_set(const LISTTYPE& v) {
         {
             number converted = (v->length > 0 ? v[0] : 0);
             this->numberobj_04_value_set(converted);
@@ -560,12 +1341,15 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void linetilde_02_target_bang() {}
     
-    number msToSamps(MillisecondTime ms, number sampleRate) {
-        return ms * sampleRate * 0.001;
-    }
+    void deallocateSignals() {
+        Index i;
     
-    MillisecondTime sampsToMs(SampleIndex samps) {
-        return samps * (this->invsr * 1000);
+        for (i = 0; i < 3; i++) {
+            this->signals[i] = freeSignal(this->signals[i]);
+        }
+    
+        this->zeroBuffer = freeSignal(this->zeroBuffer);
+        this->dummyBuffer = freeSignal(this->dummyBuffer);
     }
     
     Index getMaxBlockSize() const {
@@ -580,13 +1364,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         return false;
     }
     
-    Index getNumInputChannels() const {
-        return 2;
-    }
-    
-    Index getNumOutputChannels() const {
-        return 2;
-    }
+    void setProbingTarget(MessageTag ) {}
     
     void initializeObjects() {
         this->numberobj_01_init();
@@ -595,11 +1373,62 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         this->numberobj_04_init();
     }
     
+    Index getIsMuted()  {
+        return this->isMuted;
+    }
+    
+    void setIsMuted(Index v)  {
+        this->isMuted = v;
+    }
+    
+    void onSampleRateChanged(double ) {}
+    
+    void extractState(PatcherStateInterface& ) {}
+    
+    void applyState() {}
+    
+    void setParameterOffset(ParameterIndex offset) {
+        this->parameterOffset = offset;
+    }
+    
+    void processClockEvent(MillisecondTime time, ClockId index, bool hasValue, ParameterValue value) {
+        RNBO_UNUSED(value);
+        RNBO_UNUSED(hasValue);
+        this->updateTime(time, (ENGINE*)nullptr);
+    
+        switch (index) {
+        case -1841075377:
+            {
+            this->linetilde_01_target_bang();
+            break;
+            }
+        case -281953904:
+            {
+            this->linetilde_02_target_bang();
+            break;
+            }
+        }
+    }
+    
+    void processOutletAtCurrentTime(EngineLink* , OutletIndex , ParameterValue ) {}
+    
+    void processOutletEvent(
+        EngineLink* sender,
+        OutletIndex index,
+        ParameterValue value,
+        MillisecondTime time
+    ) {
+        this->updateTime(time, (ENGINE*)nullptr);
+        this->processOutletAtCurrentTime(sender, index, value);
+    }
+    
     void sendOutlet(OutletIndex index, ParameterValue value) {
         this->getEngine()->sendOutlet(this, index, value);
     }
     
     void startup() {}
+    
+    void fillDataRef(DataRefIndex , DataRef& ) {}
     
     void allocateDataRefs() {}
     
@@ -607,7 +1436,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         this->linetilde_01_time = v;
     }
     
-    void linetilde_01_segments_set(const list& v) {
+    template<typename LISTTYPE> void linetilde_01_segments_set(const LISTTYPE& v) {
         this->linetilde_01_segments = jsCreateListCopy(v);
     
         if ((bool)(v->length)) {
@@ -675,7 +1504,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_01_output_set(number v) {
         {
-            list converted = {v};
+            listbase<number, 1> converted = {v};
             this->linetilde_01_segments_set(converted);
         }
     }
@@ -689,17 +1518,10 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
             localvalue = trunc(localvalue);
         }
     
-        this->getEngine()->sendNumMessage(
-            TAG("valout"),
-            TAG("Pre-EQ~/number_obj-11"),
-            localvalue,
-            this->_currentTime
-        );
-    
         this->numberobj_01_output_set(localvalue);
     }
     
-    void scale_01_out_set(const list& v) {
+    template<typename LISTTYPE> void scale_01_out_set(const LISTTYPE& v) {
         this->scale_01_out = jsCreateListCopy(v);
     
         {
@@ -708,7 +1530,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         }
     }
     
-    void scale_01_input_set(const list& v) {
+    template<typename LISTTYPE> void scale_01_input_set(const LISTTYPE& v) {
         this->scale_01_input = jsCreateListCopy(v);
         list tmp = {};
     
@@ -728,7 +1550,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_02_output_set(number v) {
         {
-            list converted = {v};
+            listbase<number, 1> converted = {v};
             this->scale_01_input_set(converted);
         }
     }
@@ -742,7 +1564,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
             localvalue = trunc(localvalue);
         }
     
-        this->getEngine()->sendNumMessage(TAG("valout"), TAG("Pre-EQ~/number_obj-3"), localvalue, this->_currentTime);
         this->numberobj_02_output_set(localvalue);
     }
     
@@ -754,7 +1575,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         this->linetilde_02_time = v;
     }
     
-    void linetilde_02_segments_set(const list& v) {
+    template<typename LISTTYPE> void linetilde_02_segments_set(const LISTTYPE& v) {
         this->linetilde_02_segments = jsCreateListCopy(v);
     
         if ((bool)(v->length)) {
@@ -822,7 +1643,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_03_output_set(number v) {
         {
-            list converted = {v};
+            listbase<number, 1> converted = {v};
             this->linetilde_02_segments_set(converted);
         }
     }
@@ -836,17 +1657,10 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
             localvalue = trunc(localvalue);
         }
     
-        this->getEngine()->sendNumMessage(
-            TAG("valout"),
-            TAG("Pre-EQ~/number_obj-29"),
-            localvalue,
-            this->_currentTime
-        );
-    
         this->numberobj_03_output_set(localvalue);
     }
     
-    void scale_02_out_set(const list& v) {
+    template<typename LISTTYPE> void scale_02_out_set(const LISTTYPE& v) {
         this->scale_02_out = jsCreateListCopy(v);
     
         {
@@ -855,7 +1669,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         }
     }
     
-    void scale_02_input_set(const list& v) {
+    template<typename LISTTYPE> void scale_02_input_set(const LISTTYPE& v) {
         this->scale_02_input = jsCreateListCopy(v);
         list tmp = {};
     
@@ -875,7 +1689,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_04_output_set(number v) {
         {
-            list converted = {v};
+            listbase<number, 1> converted = {v};
             this->scale_02_input_set(converted);
         }
     }
@@ -888,13 +1702,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         if (this->numberobj_04_currentFormat != 6) {
             localvalue = trunc(localvalue);
         }
-    
-        this->getEngine()->sendNumMessage(
-            TAG("valout"),
-            TAG("Pre-EQ~/number_obj-33"),
-            localvalue,
-            this->_currentTime
-        );
     
         this->numberobj_04_output_set(localvalue);
     }
@@ -911,7 +1718,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
             localvalue = trunc(localvalue);
         }
     
-        this->getEngine()->sendNumMessage(TAG("valout"), TAG("Pre-EQ~/number_obj-3"), localvalue, this->_currentTime);
         this->numberobj_02_output_set(localvalue);
     }
     
@@ -922,13 +1728,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         if (this->numberobj_04_currentFormat != 6) {
             localvalue = trunc(localvalue);
         }
-    
-        this->getEngine()->sendNumMessage(
-            TAG("valout"),
-            TAG("Pre-EQ~/number_obj-33"),
-            localvalue,
-            this->_currentTime
-        );
     
         this->numberobj_04_output_set(localvalue);
     }
@@ -992,7 +1791,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         auto __onepole_tilde_02_freq = this->onepole_tilde_02_freq;
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             if (__onepole_tilde_02_freq != freqInHz[(Index)i] || (bool)(__onepole_tilde_02_needsUpdate)) {
                 __onepole_tilde_02_freq = freqInHz[(Index)i];
                 __onepole_tilde_02_a0 = 1 - rnbo_exp(-6.28318530717958647692 * freqInHz[(Index)i] / this->sr);
@@ -1015,7 +1814,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     void dspexpr_01_perform(const Sample * in1, const Sample * in2, SampleValue * out1, Index n) {
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             out1[(Index)i] = in1[(Index)i] - in2[(Index)i];//#map:_###_obj_###_:1
         }
     }
@@ -1028,7 +1827,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         auto __onepole_tilde_04_freq = this->onepole_tilde_04_freq;
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             if (__onepole_tilde_04_freq != freqInHz[(Index)i] || (bool)(__onepole_tilde_04_needsUpdate)) {
                 __onepole_tilde_04_freq = freqInHz[(Index)i];
                 __onepole_tilde_04_a0 = 1 - rnbo_exp(-6.28318530717958647692 * freqInHz[(Index)i] / this->sr);
@@ -1051,7 +1850,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     void dspexpr_02_perform(const Sample * in1, const Sample * in2, SampleValue * out1, Index n) {
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             out1[(Index)i] = in1[(Index)i] - in2[(Index)i];//#map:_###_obj_###_:1
         }
     }
@@ -1115,7 +1914,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         auto __onepole_tilde_03_freq = this->onepole_tilde_03_freq;
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             if (__onepole_tilde_03_freq != freqInHz[(Index)i] || (bool)(__onepole_tilde_03_needsUpdate)) {
                 __onepole_tilde_03_freq = freqInHz[(Index)i];
                 __onepole_tilde_03_a0 = 1 - rnbo_exp(-6.28318530717958647692 * freqInHz[(Index)i] / this->sr);
@@ -1143,7 +1942,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         auto __onepole_tilde_01_freq = this->onepole_tilde_01_freq;
         Index i;
     
-        for (i = 0; i < n; i++) {
+        for (i = 0; i < (Index)n; i++) {
             if (__onepole_tilde_01_freq != freqInHz[(Index)i] || (bool)(__onepole_tilde_01_needsUpdate)) {
                 __onepole_tilde_01_freq = freqInHz[(Index)i];
                 __onepole_tilde_01_a0 = 1 - rnbo_exp(-6.28318530717958647692 * freqInHz[(Index)i] / this->sr);
@@ -1272,7 +2071,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_01_init() {
         this->numberobj_01_currentFormat = 6;
-        this->getEngine()->sendNumMessage(TAG("setup"), TAG("Pre-EQ~/number_obj-11"), 1, this->_currentTime);
     }
     
     void numberobj_01_getPresetValue(PatcherStateInterface& preset) {
@@ -1288,7 +2086,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_02_init() {
         this->numberobj_02_currentFormat = 6;
-        this->getEngine()->sendNumMessage(TAG("setup"), TAG("Pre-EQ~/number_obj-3"), 1, this->_currentTime);
     }
     
     void numberobj_02_getPresetValue(PatcherStateInterface& preset) {
@@ -1304,7 +2101,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_03_init() {
         this->numberobj_03_currentFormat = 6;
-        this->getEngine()->sendNumMessage(TAG("setup"), TAG("Pre-EQ~/number_obj-29"), 1, this->_currentTime);
     }
     
     void numberobj_03_getPresetValue(PatcherStateInterface& preset) {
@@ -1320,7 +2116,6 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
     
     void numberobj_04_init() {
         this->numberobj_04_currentFormat = 6;
-        this->getEngine()->sendNumMessage(TAG("setup"), TAG("Pre-EQ~/number_obj-33"), 1, this->_currentTime);
     }
     
     void numberobj_04_getPresetValue(PatcherStateInterface& preset) {
@@ -1345,15 +2140,31 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         return false;
     }
     
-    void updateTime(MillisecondTime time) {
+    Index getPatcherSerial() const {
+        return 0;
+    }
+    
+    void sendParameter(ParameterIndex index, bool ignoreValue) {
+        this->getPatcher()->sendParameter(index + this->parameterOffset, ignoreValue);
+    }
+    
+    void scheduleParamInit(ParameterIndex index, Index order) {
+        this->getPatcher()->scheduleParamInit(index + this->parameterOffset, order);
+    }
+    
+    void updateTime(MillisecondTime time, EXTERNALENGINE* engine, bool inProcess = false) {
+        RNBO_UNUSED(inProcess);
+        RNBO_UNUSED(engine);
         this->_currentTime = time;
-        this->sampleOffsetIntoNextAudioBuffer = (SampleIndex)(rnbo_fround(this->msToSamps(time - this->getEngine()->getCurrentTime(), this->sr)));
+        auto offset = rnbo_fround(this->msToSamps(time - this->getEngine()->getCurrentTime(), this->sr));
     
-        if (this->sampleOffsetIntoNextAudioBuffer >= (SampleIndex)(this->vs))
-            this->sampleOffsetIntoNextAudioBuffer = (SampleIndex)(this->vs) - 1;
+        if (offset >= (SampleIndex)(this->vs))
+            offset = (SampleIndex)(this->vs) - 1;
     
-        if (this->sampleOffsetIntoNextAudioBuffer < 0)
-            this->sampleOffsetIntoNextAudioBuffer = 0;
+        if (offset < 0)
+            offset = 0;
+    
+        this->sampleOffsetIntoNextAudioBuffer = (Index)(offset);
     }
     
     void assign_defaults()
@@ -1371,7 +2182,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         onepole_tilde_04_x = 0;
         onepole_tilde_04_freqInHz = 20;
         linetilde_01_time = 10;
-        linetilde_01_keepramp = 0;
+        linetilde_01_keepramp = false;
         numberobj_01_value = 0;
         numberobj_01_value_setter(numberobj_01_value);
         scale_01_inlow = 0;
@@ -1382,7 +2193,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         numberobj_02_value = 0;
         numberobj_02_value_setter(numberobj_02_value);
         linetilde_02_time = 10;
-        linetilde_02_keepramp = 0;
+        linetilde_02_keepramp = false;
         numberobj_03_value = 0;
         numberobj_03_value_setter(numberobj_03_value);
         scale_02_inlow = 0;
@@ -1404,7 +2215,7 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         vs = 0;
         maxvs = 0;
         sr = 44100;
-        invsr = 0.00002267573696;
+        invsr = 0.000022675736961451248;
         onepole_tilde_01_freq = 0;
         onepole_tilde_01_needsUpdate = false;
         onepole_tilde_01_lastY = 0;
@@ -1485,8 +2296,8 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         list scale_02_out;
         number numberobj_04_value;
         MillisecondTime _currentTime;
-        SampleIndex audioProcessSampleCount;
-        SampleIndex sampleOffsetIntoNextAudioBuffer;
+        UInt64 audioProcessSampleCount;
+        Index sampleOffsetIntoNextAudioBuffer;
         signal zeroBuffer;
         signal dummyBuffer;
         SampleValue * signals[3];
@@ -1536,18 +2347,31 @@ class RNBOSubpatcher_04 : public PatcherInterfaceImpl {
         Int _noteNumber;
         Index isMuted;
         ParameterIndex parameterOffset;
-    
+        bool _isInitialized = false;
 };
 
-rnbomatic()
-{
+		
+void advanceTime(EXTERNALENGINE*) {}
+void advanceTime(INTERNALENGINE*) {
+	_internalEngine.advanceTime(sampstoms(this->vs));
 }
 
-~rnbomatic()
-{
-    delete this->p_01;
+void processInternalEvents(MillisecondTime time) {
+	_internalEngine.processEventsUntil(time);
 }
 
+void updateTime(MillisecondTime time, INTERNALENGINE*, bool inProcess = false) {
+	if (time == TimeNow) time = getPatcherTime();
+	processInternalEvents(inProcess ? time + sampsToMs(this->vs) : time);
+	updateTime(time, (EXTERNALENGINE*)nullptr);
+}
+
+rnbomatic* operator->() {
+    return this;
+}
+const rnbomatic* operator->() const {
+    return this;
+}
 rnbomatic* getTopLevelPatcher() {
     return this;
 }
@@ -1556,7 +2380,7 @@ void cancelClockEvents()
 {
 }
 
-template <typename T> void listquicksort(T& arr, T& sortindices, Int l, Int h, bool ascending) {
+template<typename LISTTYPE = list> void listquicksort(LISTTYPE& arr, LISTTYPE& sortindices, Int l, Int h, bool ascending) {
     if (l < h) {
         Int p = (Int)(this->listpartition(arr, sortindices, l, h, ascending));
         this->listquicksort(arr, sortindices, l, p - 1, ascending);
@@ -1564,7 +2388,7 @@ template <typename T> void listquicksort(T& arr, T& sortindices, Int l, Int h, b
     }
 }
 
-template <typename T> Int listpartition(T& arr, T& sortindices, Int l, Int h, bool ascending) {
+template<typename LISTTYPE = list> Int listpartition(LISTTYPE& arr, LISTTYPE& sortindices, Int l, Int h, bool ascending) {
     number x = arr[(Index)h];
     Int i = (Int)(l - 1);
 
@@ -1585,7 +2409,7 @@ template <typename T> Int listpartition(T& arr, T& sortindices, Int l, Int h, bo
     return i;
 }
 
-template <typename T> void listswapelements(T& arr, Int a, Int b) {
+template<typename LISTTYPE = list> void listswapelements(LISTTYPE& arr, Int a, Int b) {
     auto tmp = arr[(Index)a];
     arr[(Index)a] = arr[(Index)b];
     arr[(Index)b] = tmp;
@@ -1622,6 +2446,55 @@ number scale(
     return value;
 }
 
+number fold(number x, number low, number high) {
+    number lo;
+    number hi;
+
+    if (low == high) {
+        return low;
+    }
+
+    if (low > high) {
+        hi = low;
+        lo = high;
+    } else {
+        lo = low;
+        hi = high;
+    }
+
+    number range = hi - lo;
+    Int numWraps = 0;
+
+    if (x >= hi) {
+        x -= range;
+
+        if (x >= hi) {
+            numWraps = (x - lo) / range;
+            x -= range * numWraps;
+        }
+
+        numWraps++;
+    } else if (x < lo) {
+        x += range;
+
+        if (x < lo) {
+            numWraps = (x - lo) / range - 1;
+            x -= range * numWraps;
+        }
+
+        numWraps--;
+    }
+
+    if ((BinOpInt)((BinOpInt)numWraps & (BinOpInt)1))
+        x = hi + lo - x;
+
+    return x;
+}
+
+number fromnormalized(Index index, number normalizedValue) {
+    return this->convertFromNormalizedParameterValue(index, normalizedValue);
+}
+
 number mstosamps(MillisecondTime ms) {
     return ms * this->sr * 0.001;
 }
@@ -1630,750 +2503,9 @@ number maximum(number x, number y) {
     return (x < y ? y : x);
 }
 
-MillisecondTime currenttime() {
-    return this->_currentTime;
-}
-
-number tempo() {
-    return this->getTopLevelPatcher()->globaltransport_getTempo(this->currenttime());
-}
-
-number mstobeats(number ms) {
-    return ms * this->tempo() * 0.008 / (number)480;
-}
-
 MillisecondTime sampstoms(number samps) {
     return samps * 1000 / this->sr;
 }
-
-Index getNumMidiInputPorts() const {
-    return 0;
-}
-
-void processMidiEvent(MillisecondTime , int , ConstByteArray , Index ) {}
-
-Index getNumMidiOutputPorts() const {
-    return 0;
-}
-
-void process(
-    const SampleValue * const* inputs,
-    Index numInputs,
-    SampleValue * const* outputs,
-    Index numOutputs,
-    Index n
-) {
-    this->vs = n;
-    this->updateTime(this->getEngine()->getCurrentTime());
-    SampleValue * out1 = (numOutputs >= 1 && outputs[0] ? outputs[0] : this->dummyBuffer);
-    SampleValue * out2 = (numOutputs >= 2 && outputs[1] ? outputs[1] : this->dummyBuffer);
-    const SampleValue * in1 = (numInputs >= 1 && inputs[0] ? inputs[0] : this->zeroBuffer);
-    const SampleValue * in2 = (numInputs >= 2 && inputs[1] ? inputs[1] : this->zeroBuffer);
-    this->p_01_perform(in1, in2, this->signals[0], this->signals[1], n);
-
-    this->gen_01_perform(
-        this->signals[0],
-        this->signals[1],
-        this->gen_01_Mix,
-        this->gen_01_clipType,
-        this->gen_01_clipNeg,
-        this->gen_01_clipPos,
-        out1,
-        out2,
-        n
-    );
-
-    this->stackprotect_perform(n);
-    this->globaltransport_advance();
-    this->audioProcessSampleCount += this->vs;
-}
-
-void prepareToProcess(number sampleRate, Index maxBlockSize, bool force) {
-    if (this->maxvs < maxBlockSize || !this->didAllocateSignals) {
-        Index i;
-
-        for (i = 0; i < 2; i++) {
-            this->signals[i] = resizeSignal(this->signals[i], this->maxvs, maxBlockSize);
-        }
-
-        this->globaltransport_tempo = resizeSignal(this->globaltransport_tempo, this->maxvs, maxBlockSize);
-        this->globaltransport_state = resizeSignal(this->globaltransport_state, this->maxvs, maxBlockSize);
-        this->zeroBuffer = resizeSignal(this->zeroBuffer, this->maxvs, maxBlockSize);
-        this->dummyBuffer = resizeSignal(this->dummyBuffer, this->maxvs, maxBlockSize);
-        this->didAllocateSignals = true;
-    }
-
-    const bool sampleRateChanged = sampleRate != this->sr;
-    const bool maxvsChanged = maxBlockSize != this->maxvs;
-    const bool forceDSPSetup = sampleRateChanged || maxvsChanged || force;
-
-    if (sampleRateChanged || maxvsChanged) {
-        this->vs = maxBlockSize;
-        this->maxvs = maxBlockSize;
-        this->sr = sampleRate;
-        this->invsr = 1 / sampleRate;
-    }
-
-    this->globaltransport_dspsetup(forceDSPSetup);
-    this->p_01->prepareToProcess(sampleRate, maxBlockSize, force);
-
-    if (sampleRateChanged)
-        this->onSampleRateChanged(sampleRate);
-}
-
-void setProbingTarget(MessageTag id) {
-    switch (id) {
-    default:
-        {
-        this->setProbingIndex(-1);
-        break;
-        }
-    }
-}
-
-void setProbingIndex(ProbingIndex ) {}
-
-Index getProbingChannels(MessageTag outletId) const {
-    RNBO_UNUSED(outletId);
-    return 0;
-}
-
-DataRef* getDataRef(DataRefIndex index)  {
-    switch (index) {
-    default:
-        {
-        return nullptr;
-        }
-    }
-}
-
-DataRefIndex getNumDataRefs() const {
-    return 0;
-}
-
-void fillDataRef(DataRefIndex , DataRef& ) {}
-
-void processDataViewUpdate(DataRefIndex index, MillisecondTime time) {
-    this->p_01->processDataViewUpdate(index, time);
-}
-
-void initialize() {
-    this->assign_defaults();
-    this->setState();
-    this->initializeObjects();
-    this->allocateDataRefs();
-    this->startup();
-}
-
-Index getIsMuted()  {
-    return this->isMuted;
-}
-
-void setIsMuted(Index v)  {
-    this->isMuted = v;
-}
-
-Index getPatcherSerial() const {
-    return 0;
-}
-
-void getState(PatcherStateInterface& ) {}
-
-void setState() {
-    this->p_01 = new RNBOSubpatcher_04();
-    this->p_01->setEngineAndPatcher(this->getEngine(), this);
-    this->p_01->initialize();
-    this->p_01->setParameterOffset(this->getParameterOffset(this->p_01));
-}
-
-void getPreset(PatcherStateInterface& preset) {
-    preset["__presetid"] = "rnbo";
-    this->param_01_getPresetValue(getSubState(preset, "preLowcut"));
-    this->param_02_getPresetValue(getSubState(preset, "preHighcut"));
-    this->param_03_getPresetValue(getSubState(preset, "Mix"));
-    this->param_04_getPresetValue(getSubState(preset, "clipType"));
-    this->param_05_getPresetValue(getSubState(preset, "clipNeg"));
-    this->param_06_getPresetValue(getSubState(preset, "clipPos"));
-    this->p_01->getPreset(getSubState(getSubState(preset, "__sps"), "Pre-EQ~"));
-}
-
-void setPreset(MillisecondTime time, PatcherStateInterface& preset) {
-    this->updateTime(time);
-    this->param_01_setPresetValue(getSubState(preset, "preLowcut"));
-    this->param_02_setPresetValue(getSubState(preset, "preHighcut"));
-    this->param_03_setPresetValue(getSubState(preset, "Mix"));
-    this->param_04_setPresetValue(getSubState(preset, "clipType"));
-    this->param_05_setPresetValue(getSubState(preset, "clipNeg"));
-    this->param_06_setPresetValue(getSubState(preset, "clipPos"));
-}
-
-void processTempoEvent(MillisecondTime time, Tempo tempo) {
-    this->updateTime(time);
-
-    if (this->globaltransport_setTempo(this->_currentTime, tempo, false)) {
-        this->p_01->processTempoEvent(time, tempo);
-    }
-}
-
-void processTransportEvent(MillisecondTime time, TransportState state) {
-    this->updateTime(time);
-
-    if (this->globaltransport_setState(this->_currentTime, state, false)) {
-        this->p_01->processTransportEvent(time, state);
-    }
-}
-
-void processBeatTimeEvent(MillisecondTime time, BeatTime beattime) {
-    this->updateTime(time);
-
-    if (this->globaltransport_setBeatTime(this->_currentTime, beattime, false)) {
-        this->p_01->processBeatTimeEvent(time, beattime);
-    }
-}
-
-void onSampleRateChanged(double ) {}
-
-void processTimeSignatureEvent(MillisecondTime time, int numerator, int denominator) {
-    this->updateTime(time);
-
-    if (this->globaltransport_setTimeSignature(this->_currentTime, numerator, denominator, false)) {
-        this->p_01->processTimeSignatureEvent(time, numerator, denominator);
-    }
-}
-
-void setParameterValue(ParameterIndex index, ParameterValue v, MillisecondTime time) {
-    this->updateTime(time);
-
-    switch (index) {
-    case 0:
-        {
-        this->param_01_value_set(v);
-        break;
-        }
-    case 1:
-        {
-        this->param_02_value_set(v);
-        break;
-        }
-    case 2:
-        {
-        this->param_03_value_set(v);
-        break;
-        }
-    case 3:
-        {
-        this->param_04_value_set(v);
-        break;
-        }
-    case 4:
-        {
-        this->param_05_value_set(v);
-        break;
-        }
-    case 5:
-        {
-        this->param_06_value_set(v);
-        break;
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            this->p_01->setParameterValue(index, v, time);
-
-        break;
-        }
-    }
-}
-
-void processParameterEvent(ParameterIndex index, ParameterValue value, MillisecondTime time) {
-    this->setParameterValue(index, value, time);
-}
-
-void processParameterBangEvent(ParameterIndex index, MillisecondTime time) {
-    this->setParameterValue(index, this->getParameterValue(index), time);
-}
-
-void processNormalizedParameterEvent(ParameterIndex index, ParameterValue value, MillisecondTime time) {
-    this->setParameterValueNormalized(index, value, time);
-}
-
-ParameterValue getParameterValue(ParameterIndex index)  {
-    switch (index) {
-    case 0:
-        {
-        return this->param_01_value;
-        }
-    case 1:
-        {
-        return this->param_02_value;
-        }
-    case 2:
-        {
-        return this->param_03_value;
-        }
-    case 3:
-        {
-        return this->param_04_value;
-        }
-    case 4:
-        {
-        return this->param_05_value;
-        }
-    case 5:
-        {
-        return this->param_06_value;
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->getParameterValue(index);
-
-        return 0;
-        }
-    }
-}
-
-ParameterIndex getNumSignalInParameters() const {
-    return 0;
-}
-
-ParameterIndex getNumSignalOutParameters() const {
-    return 0;
-}
-
-ParameterIndex getNumParameters() const {
-    return 6 + this->p_01->getNumParameters();
-}
-
-ConstCharPointer getParameterName(ParameterIndex index) const {
-    switch (index) {
-    case 0:
-        {
-        return "preLowcut";
-        }
-    case 1:
-        {
-        return "preHighcut";
-        }
-    case 2:
-        {
-        return "Mix";
-        }
-    case 3:
-        {
-        return "clipType";
-        }
-    case 4:
-        {
-        return "clipNeg";
-        }
-    case 5:
-        {
-        return "clipPos";
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->getParameterName(index);
-
-        return "bogus";
-        }
-    }
-}
-
-ConstCharPointer getParameterId(ParameterIndex index) const {
-    switch (index) {
-    case 0:
-        {
-        return "preLowcut";
-        }
-    case 1:
-        {
-        return "preHighcut";
-        }
-    case 2:
-        {
-        return "Mix";
-        }
-    case 3:
-        {
-        return "clipType";
-        }
-    case 4:
-        {
-        return "clipNeg";
-        }
-    case 5:
-        {
-        return "clipPos";
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->getParameterId(index);
-
-        return "bogus";
-        }
-    }
-}
-
-void getParameterInfo(ParameterIndex index, ParameterInfo * info) const {
-    {
-        switch (index) {
-        case 0:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 100;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        case 1:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 100;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        case 2:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 100;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        case 3:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 2;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        case 4:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 100;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        case 5:
-            {
-            info->type = ParameterTypeNumber;
-            info->initialValue = 0;
-            info->min = 0;
-            info->max = 100;
-            info->exponent = 1;
-            info->steps = 0;
-            info->debug = false;
-            info->saveable = true;
-            info->transmittable = true;
-            info->initialized = true;
-            info->visible = true;
-            info->displayName = "";
-            info->unit = "";
-            info->ioType = IOTypeUndefined;
-            info->signalIndex = INVALID_INDEX;
-            break;
-            }
-        default:
-            {
-            index -= 6;
-
-            if (index < this->p_01->getNumParameters())
-                this->p_01->getParameterInfo(index, info);
-
-            break;
-            }
-        }
-    }
-}
-
-void sendParameter(ParameterIndex index, bool ignoreValue) {
-    this->getEngine()->notifyParameterValueChanged(index, (ignoreValue ? 0 : this->getParameterValue(index)), ignoreValue);
-}
-
-ParameterIndex getParameterOffset(BaseInterface* subpatcher) const {
-    if (subpatcher == this->p_01)
-        return 6;
-
-    return 0;
-}
-
-ParameterValue applyStepsToNormalizedParameterValue(ParameterValue normalizedValue, int steps) const {
-    if (steps == 1) {
-        if (normalizedValue > 0) {
-            normalizedValue = 1.;
-        }
-    } else {
-        ParameterValue oneStep = (number)1. / (steps - 1);
-        ParameterValue numberOfSteps = rnbo_fround(normalizedValue / oneStep * 1 / (number)1) * (number)1;
-        normalizedValue = numberOfSteps * oneStep;
-    }
-
-    return normalizedValue;
-}
-
-ParameterValue convertToNormalizedParameterValue(ParameterIndex index, ParameterValue value) const {
-    switch (index) {
-    case 3:
-        {
-        {
-            value = (value < 0 ? 0 : (value > 2 ? 2 : value));
-            ParameterValue normalizedValue = (value - 0) / (2 - 0);
-            return normalizedValue;
-        }
-        }
-    case 0:
-    case 1:
-    case 2:
-    case 4:
-    case 5:
-        {
-        {
-            value = (value < 0 ? 0 : (value > 100 ? 100 : value));
-            ParameterValue normalizedValue = (value - 0) / (100 - 0);
-            return normalizedValue;
-        }
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->convertToNormalizedParameterValue(index, value);
-
-        return value;
-        }
-    }
-}
-
-ParameterValue convertFromNormalizedParameterValue(ParameterIndex index, ParameterValue value) const {
-    value = (value < 0 ? 0 : (value > 1 ? 1 : value));
-
-    switch (index) {
-    case 3:
-        {
-        {
-            value = (value < 0 ? 0 : (value > 1 ? 1 : value));
-
-            {
-                return 0 + value * (2 - 0);
-            }
-        }
-        }
-    case 0:
-    case 1:
-    case 2:
-    case 4:
-    case 5:
-        {
-        {
-            value = (value < 0 ? 0 : (value > 1 ? 1 : value));
-
-            {
-                return 0 + value * (100 - 0);
-            }
-        }
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->convertFromNormalizedParameterValue(index, value);
-
-        return value;
-        }
-    }
-}
-
-ParameterValue constrainParameterValue(ParameterIndex index, ParameterValue value) const {
-    switch (index) {
-    case 0:
-        {
-        return this->param_01_value_constrain(value);
-        }
-    case 1:
-        {
-        return this->param_02_value_constrain(value);
-        }
-    case 2:
-        {
-        return this->param_03_value_constrain(value);
-        }
-    case 3:
-        {
-        return this->param_04_value_constrain(value);
-        }
-    case 4:
-        {
-        return this->param_05_value_constrain(value);
-        }
-    case 5:
-        {
-        return this->param_06_value_constrain(value);
-        }
-    default:
-        {
-        index -= 6;
-
-        if (index < this->p_01->getNumParameters())
-            return this->p_01->constrainParameterValue(index, value);
-
-        return value;
-        }
-    }
-}
-
-void scheduleParamInit(ParameterIndex index, Index order) {
-    this->paramInitIndices->push(index);
-    this->paramInitOrder->push(order);
-}
-
-void processParamInitEvents() {
-    this->listquicksort(
-        this->paramInitOrder,
-        this->paramInitIndices,
-        0,
-        (int)(this->paramInitOrder->length - 1),
-        true
-    );
-
-    for (Index i = 0; i < this->paramInitOrder->length; i++) {
-        this->getEngine()->scheduleParameterBang(this->paramInitIndices[i], 0);
-    }
-}
-
-void processClockEvent(MillisecondTime , ClockId , bool , ParameterValue ) {}
-
-void processOutletAtCurrentTime(EngineLink* , OutletIndex , ParameterValue ) {}
-
-void processOutletEvent(
-    EngineLink* sender,
-    OutletIndex index,
-    ParameterValue value,
-    MillisecondTime time
-) {
-    this->updateTime(time);
-    this->processOutletAtCurrentTime(sender, index, value);
-}
-
-void processNumMessage(MessageTag tag, MessageTag objectId, MillisecondTime time, number payload) {
-    RNBO_UNUSED(objectId);
-    this->updateTime(time);
-    this->p_01->processNumMessage(tag, objectId, time, payload);
-}
-
-void processListMessage(
-    MessageTag tag,
-    MessageTag objectId,
-    MillisecondTime time,
-    const list& payload
-) {
-    RNBO_UNUSED(objectId);
-    this->updateTime(time);
-    this->p_01->processListMessage(tag, objectId, time, payload);
-}
-
-void processBangMessage(MessageTag tag, MessageTag objectId, MillisecondTime time) {
-    RNBO_UNUSED(objectId);
-    this->updateTime(time);
-    this->p_01->processBangMessage(tag, objectId, time);
-}
-
-MessageTagInfo resolveTag(MessageTag tag) const {
-    switch (tag) {
-
-    }
-
-    auto subpatchResult_0 = this->p_01->resolveTag(tag);
-
-    if (subpatchResult_0)
-        return subpatchResult_0;
-
-    return "";
-}
-
-MessageIndex getNumMessages() const {
-    return 0;
-}
-
-const MessageInfo& getMessageInfo(MessageIndex index) const {
-    switch (index) {
-
-    }
-
-    return NullMessageInfo;
-}
-
-protected:
 
 void param_01_value_set(number v) {
     v = this->param_01_value_constrain(v);
@@ -2411,7 +2543,7 @@ void param_03_value_set(number v) {
         this->param_03_lastValue = this->param_03_value;
     }
 
-    this->gen_01_Mix_set(v);
+    this->gen_01_foldMode_set(v);
 }
 
 void param_04_value_set(number v) {
@@ -2424,7 +2556,7 @@ void param_04_value_set(number v) {
         this->param_04_lastValue = this->param_04_value;
     }
 
-    this->gen_01_clipType_set(v);
+    this->gen_01_feedCoe_down_set(v);
 }
 
 void param_05_value_set(number v) {
@@ -2437,7 +2569,7 @@ void param_05_value_set(number v) {
         this->param_05_lastValue = this->param_05_value;
     }
 
-    this->gen_01_clipNeg_set(v);
+    this->gen_01_feedCoe_up_set(v);
 }
 
 void param_06_value_set(number v) {
@@ -2450,15 +2582,63 @@ void param_06_value_set(number v) {
         this->param_06_lastValue = this->param_06_value;
     }
 
+    this->gen_01_Mix_set(v);
+}
+
+void param_07_value_set(number v) {
+    v = this->param_07_value_constrain(v);
+    this->param_07_value = v;
+    this->sendParameter(6, false);
+
+    if (this->param_07_value != this->param_07_lastValue) {
+        this->getEngine()->presetTouched();
+        this->param_07_lastValue = this->param_07_value;
+    }
+
+    this->gen_01_clipType_set(v);
+}
+
+void param_08_value_set(number v) {
+    v = this->param_08_value_constrain(v);
+    this->param_08_value = v;
+    this->sendParameter(7, false);
+
+    if (this->param_08_value != this->param_08_lastValue) {
+        this->getEngine()->presetTouched();
+        this->param_08_lastValue = this->param_08_value;
+    }
+
+    this->gen_01_clipNeg_set(v);
+}
+
+void param_09_value_set(number v) {
+    v = this->param_09_value_constrain(v);
+    this->param_09_value = v;
+    this->sendParameter(8, false);
+
+    if (this->param_09_value != this->param_09_lastValue) {
+        this->getEngine()->presetTouched();
+        this->param_09_lastValue = this->param_09_value;
+    }
+
     this->gen_01_clipPos_set(v);
 }
 
-number msToSamps(MillisecondTime ms, number sampleRate) {
-    return ms * sampleRate * 0.001;
+MillisecondTime getPatcherTime() const {
+    return this->_currentTime;
 }
 
-MillisecondTime sampsToMs(SampleIndex samps) {
-    return samps * (this->invsr * 1000);
+void deallocateSignals() {
+    Index i;
+
+    for (i = 0; i < 2; i++) {
+        this->signals[i] = freeSignal(this->signals[i]);
+    }
+
+    this->globaltransport_tempo = freeSignal(this->globaltransport_tempo);
+    this->globaltransport_state = freeSignal(this->globaltransport_state);
+    this->zeroBuffer = freeSignal(this->zeroBuffer);
+    this->dummyBuffer = freeSignal(this->dummyBuffer);
 }
 
 Index getMaxBlockSize() const {
@@ -2473,20 +2653,64 @@ bool hasFixedVectorSize() const {
     return false;
 }
 
-Index getNumInputChannels() const {
-    return 2;
-}
+void setProbingTarget(MessageTag ) {}
 
-Index getNumOutputChannels() const {
-    return 2;
-}
+void fillDataRef(DataRefIndex , DataRef& ) {}
 
 void allocateDataRefs() {
     this->p_01->allocateDataRefs();
 }
 
 void initializeObjects() {
+    this->gen_01_softClipValL_init();
+    this->gen_01_softClipValR_init();
+    this->gen_01_hardClipValL_init();
+    this->gen_01_hardClipValR_init();
+    this->gen_01_superhardClipValL_init();
+    this->gen_01_superhardClipValR_init();
+    this->gen_01_change_4_init();
+    this->gen_01_change_6_init();
     this->p_01->initializeObjects();
+}
+
+Index getIsMuted()  {
+    return this->isMuted;
+}
+
+void setIsMuted(Index v)  {
+    this->isMuted = v;
+}
+
+void onSampleRateChanged(double ) {}
+
+void extractState(PatcherStateInterface& ) {}
+
+void applyState() {
+
+    this->p_01->setEngineAndPatcher(this->getEngine(), this);
+    this->p_01->initialize();
+    this->p_01->setParameterOffset(this->getParameterOffset(this->p_01));
+}
+
+ParameterIndex getParameterOffset(BaseInterface& subpatcher) const {
+    if (addressOf(subpatcher) == addressOf(this->p_01))
+        return 9;
+
+    return 0;
+}
+
+void processClockEvent(MillisecondTime , ClockId , bool , ParameterValue ) {}
+
+void processOutletAtCurrentTime(EngineLink* , OutletIndex , ParameterValue ) {}
+
+void processOutletEvent(
+    EngineLink* sender,
+    OutletIndex index,
+    ParameterValue value,
+    MillisecondTime time
+) {
+    this->updateTime(time, (ENGINE*)nullptr);
+    this->processOutletAtCurrentTime(sender, index, value);
 }
 
 void sendOutlet(OutletIndex index, ParameterValue value) {
@@ -2494,7 +2718,7 @@ void sendOutlet(OutletIndex index, ParameterValue value) {
 }
 
 void startup() {
-    this->updateTime(this->getEngine()->getCurrentTime());
+    this->updateTime(this->getEngine()->getCurrentTime(), (ENGINE*)nullptr);
     this->p_01->startup();
 
     {
@@ -2521,30 +2745,69 @@ void startup() {
         this->scheduleParamInit(5, 0);
     }
 
+    {
+        this->scheduleParamInit(6, 0);
+    }
+
+    {
+        this->scheduleParamInit(7, 0);
+    }
+
+    {
+        this->scheduleParamInit(8, 0);
+    }
+
     this->processParamInitEvents();
 }
 
-static number param_01_value_constrain(number v) {
+number param_01_value_constrain(number v) const {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
 
 void p_01_in3_number_set(number v) {
-    this->p_01->updateTime(this->_currentTime);
+    this->p_01->updateTime(this->_currentTime, (ENGINE*)nullptr);
     this->p_01->eventinlet_01_out1_number_set(v);
 }
 
-static number param_02_value_constrain(number v) {
+number param_02_value_constrain(number v) const {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
 
 void p_01_in4_number_set(number v) {
-    this->p_01->updateTime(this->_currentTime);
+    this->p_01->updateTime(this->_currentTime, (ENGINE*)nullptr);
     this->p_01->eventinlet_02_out1_number_set(v);
 }
 
-static number param_03_value_constrain(number v) {
+number param_03_value_constrain(number v) const {
+    v = (v > 1 ? 1 : (v < 0 ? 0 : v));
+    return v;
+}
+
+void gen_01_foldMode_set(number v) {
+    this->gen_01_foldMode = v;
+}
+
+number param_04_value_constrain(number v) const {
+    v = (v > 0.99 ? 0.99 : (v < 0 ? 0 : v));
+    return v;
+}
+
+void gen_01_feedCoe_down_set(number v) {
+    this->gen_01_feedCoe_down = v;
+}
+
+number param_05_value_constrain(number v) const {
+    v = (v > 0.99 ? 0.99 : (v < 0 ? 0 : v));
+    return v;
+}
+
+void gen_01_feedCoe_up_set(number v) {
+    this->gen_01_feedCoe_up = v;
+}
+
+number param_06_value_constrain(number v) const {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2553,7 +2816,7 @@ void gen_01_Mix_set(number v) {
     this->gen_01_Mix = v;
 }
 
-static number param_04_value_constrain(number v) {
+number param_07_value_constrain(number v) const {
     v = (v > 2 ? 2 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2562,7 +2825,7 @@ void gen_01_clipType_set(number v) {
     this->gen_01_clipType = v;
 }
 
-static number param_05_value_constrain(number v) {
+number param_08_value_constrain(number v) const {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
@@ -2571,13 +2834,355 @@ void gen_01_clipNeg_set(number v) {
     this->gen_01_clipNeg = v;
 }
 
-static number param_06_value_constrain(number v) {
+number param_09_value_constrain(number v) const {
     v = (v > 100 ? 100 : (v < 0 ? 0 : v));
     return v;
 }
 
 void gen_01_clipPos_set(number v) {
     this->gen_01_clipPos = v;
+}
+
+void ctlin_01_outchannel_set(number ) {}
+
+void ctlin_01_outcontroller_set(number ) {}
+
+void fromnormalized_01_output_set(number v) {
+    this->param_01_value_set(v);
+}
+
+void fromnormalized_01_input_set(number v) {
+    this->fromnormalized_01_output_set(this->fromnormalized(0, v));
+}
+
+void expr_01_out1_set(number v) {
+    this->expr_01_out1 = v;
+    this->fromnormalized_01_input_set(this->expr_01_out1);
+}
+
+void expr_01_in1_set(number in1) {
+    this->expr_01_in1 = in1;
+    this->expr_01_out1_set(this->expr_01_in1 * this->expr_01_in2);//#map:expr_01:1
+}
+
+void ctlin_01_value_set(number v) {
+    this->expr_01_in1_set(v);
+}
+
+void ctlin_01_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_01_channel || this->ctlin_01_channel == -1) && (data[1] == this->ctlin_01_controller || this->ctlin_01_controller == -1)) {
+        this->ctlin_01_outchannel_set(channel);
+        this->ctlin_01_outcontroller_set(data[1]);
+        this->ctlin_01_value_set(data[2]);
+        this->ctlin_01_status = 0;
+    }
+}
+
+void ctlin_02_outchannel_set(number ) {}
+
+void ctlin_02_outcontroller_set(number ) {}
+
+void fromnormalized_02_output_set(number v) {
+    this->param_02_value_set(v);
+}
+
+void fromnormalized_02_input_set(number v) {
+    this->fromnormalized_02_output_set(this->fromnormalized(1, v));
+}
+
+void expr_02_out1_set(number v) {
+    this->expr_02_out1 = v;
+    this->fromnormalized_02_input_set(this->expr_02_out1);
+}
+
+void expr_02_in1_set(number in1) {
+    this->expr_02_in1 = in1;
+    this->expr_02_out1_set(this->expr_02_in1 * this->expr_02_in2);//#map:expr_02:1
+}
+
+void ctlin_02_value_set(number v) {
+    this->expr_02_in1_set(v);
+}
+
+void ctlin_02_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_02_channel || this->ctlin_02_channel == -1) && (data[1] == this->ctlin_02_controller || this->ctlin_02_controller == -1)) {
+        this->ctlin_02_outchannel_set(channel);
+        this->ctlin_02_outcontroller_set(data[1]);
+        this->ctlin_02_value_set(data[2]);
+        this->ctlin_02_status = 0;
+    }
+}
+
+void ctlin_03_outchannel_set(number ) {}
+
+void ctlin_03_outcontroller_set(number ) {}
+
+void fromnormalized_03_output_set(number v) {
+    this->param_03_value_set(v);
+}
+
+void fromnormalized_03_input_set(number v) {
+    this->fromnormalized_03_output_set(this->fromnormalized(2, v));
+}
+
+void expr_03_out1_set(number v) {
+    this->expr_03_out1 = v;
+    this->fromnormalized_03_input_set(this->expr_03_out1);
+}
+
+void expr_03_in1_set(number in1) {
+    this->expr_03_in1 = in1;
+    this->expr_03_out1_set(this->expr_03_in1 * this->expr_03_in2);//#map:expr_03:1
+}
+
+void ctlin_03_value_set(number v) {
+    this->expr_03_in1_set(v);
+}
+
+void ctlin_03_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_03_channel || this->ctlin_03_channel == -1) && (data[1] == this->ctlin_03_controller || this->ctlin_03_controller == -1)) {
+        this->ctlin_03_outchannel_set(channel);
+        this->ctlin_03_outcontroller_set(data[1]);
+        this->ctlin_03_value_set(data[2]);
+        this->ctlin_03_status = 0;
+    }
+}
+
+void ctlin_04_outchannel_set(number ) {}
+
+void ctlin_04_outcontroller_set(number ) {}
+
+void fromnormalized_04_output_set(number v) {
+    this->param_04_value_set(v);
+}
+
+void fromnormalized_04_input_set(number v) {
+    this->fromnormalized_04_output_set(this->fromnormalized(3, v));
+}
+
+void expr_04_out1_set(number v) {
+    this->expr_04_out1 = v;
+    this->fromnormalized_04_input_set(this->expr_04_out1);
+}
+
+void expr_04_in1_set(number in1) {
+    this->expr_04_in1 = in1;
+    this->expr_04_out1_set(this->expr_04_in1 * this->expr_04_in2);//#map:expr_04:1
+}
+
+void ctlin_04_value_set(number v) {
+    this->expr_04_in1_set(v);
+}
+
+void ctlin_04_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_04_channel || this->ctlin_04_channel == -1) && (data[1] == this->ctlin_04_controller || this->ctlin_04_controller == -1)) {
+        this->ctlin_04_outchannel_set(channel);
+        this->ctlin_04_outcontroller_set(data[1]);
+        this->ctlin_04_value_set(data[2]);
+        this->ctlin_04_status = 0;
+    }
+}
+
+void ctlin_05_outchannel_set(number ) {}
+
+void ctlin_05_outcontroller_set(number ) {}
+
+void fromnormalized_05_output_set(number v) {
+    this->param_05_value_set(v);
+}
+
+void fromnormalized_05_input_set(number v) {
+    this->fromnormalized_05_output_set(this->fromnormalized(4, v));
+}
+
+void expr_05_out1_set(number v) {
+    this->expr_05_out1 = v;
+    this->fromnormalized_05_input_set(this->expr_05_out1);
+}
+
+void expr_05_in1_set(number in1) {
+    this->expr_05_in1 = in1;
+    this->expr_05_out1_set(this->expr_05_in1 * this->expr_05_in2);//#map:expr_05:1
+}
+
+void ctlin_05_value_set(number v) {
+    this->expr_05_in1_set(v);
+}
+
+void ctlin_05_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_05_channel || this->ctlin_05_channel == -1) && (data[1] == this->ctlin_05_controller || this->ctlin_05_controller == -1)) {
+        this->ctlin_05_outchannel_set(channel);
+        this->ctlin_05_outcontroller_set(data[1]);
+        this->ctlin_05_value_set(data[2]);
+        this->ctlin_05_status = 0;
+    }
+}
+
+void ctlin_06_outchannel_set(number ) {}
+
+void ctlin_06_outcontroller_set(number ) {}
+
+void fromnormalized_06_output_set(number v) {
+    this->param_06_value_set(v);
+}
+
+void fromnormalized_06_input_set(number v) {
+    this->fromnormalized_06_output_set(this->fromnormalized(5, v));
+}
+
+void expr_06_out1_set(number v) {
+    this->expr_06_out1 = v;
+    this->fromnormalized_06_input_set(this->expr_06_out1);
+}
+
+void expr_06_in1_set(number in1) {
+    this->expr_06_in1 = in1;
+    this->expr_06_out1_set(this->expr_06_in1 * this->expr_06_in2);//#map:expr_06:1
+}
+
+void ctlin_06_value_set(number v) {
+    this->expr_06_in1_set(v);
+}
+
+void ctlin_06_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_06_channel || this->ctlin_06_channel == -1) && (data[1] == this->ctlin_06_controller || this->ctlin_06_controller == -1)) {
+        this->ctlin_06_outchannel_set(channel);
+        this->ctlin_06_outcontroller_set(data[1]);
+        this->ctlin_06_value_set(data[2]);
+        this->ctlin_06_status = 0;
+    }
+}
+
+void ctlin_07_outchannel_set(number ) {}
+
+void ctlin_07_outcontroller_set(number ) {}
+
+void fromnormalized_07_output_set(number v) {
+    this->param_07_value_set(v);
+}
+
+void fromnormalized_07_input_set(number v) {
+    this->fromnormalized_07_output_set(this->fromnormalized(6, v));
+}
+
+void expr_07_out1_set(number v) {
+    this->expr_07_out1 = v;
+    this->fromnormalized_07_input_set(this->expr_07_out1);
+}
+
+void expr_07_in1_set(number in1) {
+    this->expr_07_in1 = in1;
+    this->expr_07_out1_set(this->expr_07_in1 * this->expr_07_in2);//#map:expr_07:1
+}
+
+void ctlin_07_value_set(number v) {
+    this->expr_07_in1_set(v);
+}
+
+void ctlin_07_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_07_channel || this->ctlin_07_channel == -1) && (data[1] == this->ctlin_07_controller || this->ctlin_07_controller == -1)) {
+        this->ctlin_07_outchannel_set(channel);
+        this->ctlin_07_outcontroller_set(data[1]);
+        this->ctlin_07_value_set(data[2]);
+        this->ctlin_07_status = 0;
+    }
+}
+
+void ctlin_08_outchannel_set(number ) {}
+
+void ctlin_08_outcontroller_set(number ) {}
+
+void fromnormalized_08_output_set(number v) {
+    this->param_08_value_set(v);
+}
+
+void fromnormalized_08_input_set(number v) {
+    this->fromnormalized_08_output_set(this->fromnormalized(7, v));
+}
+
+void expr_08_out1_set(number v) {
+    this->expr_08_out1 = v;
+    this->fromnormalized_08_input_set(this->expr_08_out1);
+}
+
+void expr_08_in1_set(number in1) {
+    this->expr_08_in1 = in1;
+    this->expr_08_out1_set(this->expr_08_in1 * this->expr_08_in2);//#map:expr_08:1
+}
+
+void ctlin_08_value_set(number v) {
+    this->expr_08_in1_set(v);
+}
+
+void ctlin_08_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_08_channel || this->ctlin_08_channel == -1) && (data[1] == this->ctlin_08_controller || this->ctlin_08_controller == -1)) {
+        this->ctlin_08_outchannel_set(channel);
+        this->ctlin_08_outcontroller_set(data[1]);
+        this->ctlin_08_value_set(data[2]);
+        this->ctlin_08_status = 0;
+    }
+}
+
+void ctlin_09_outchannel_set(number ) {}
+
+void ctlin_09_outcontroller_set(number ) {}
+
+void fromnormalized_09_output_set(number v) {
+    this->param_09_value_set(v);
+}
+
+void fromnormalized_09_input_set(number v) {
+    this->fromnormalized_09_output_set(this->fromnormalized(8, v));
+}
+
+void expr_09_out1_set(number v) {
+    this->expr_09_out1 = v;
+    this->fromnormalized_09_input_set(this->expr_09_out1);
+}
+
+void expr_09_in1_set(number in1) {
+    this->expr_09_in1 = in1;
+    this->expr_09_out1_set(this->expr_09_in1 * this->expr_09_in2);//#map:expr_09:1
+}
+
+void ctlin_09_value_set(number v) {
+    this->expr_09_in1_set(v);
+}
+
+void ctlin_09_midihandler(int status, int channel, int port, ConstByteArray data, Index length) {
+    RNBO_UNUSED(length);
+    RNBO_UNUSED(port);
+
+    if (status == 0xB0 && (channel == this->ctlin_09_channel || this->ctlin_09_channel == -1) && (data[1] == this->ctlin_09_controller || this->ctlin_09_controller == -1)) {
+        this->ctlin_09_outchannel_set(channel);
+        this->ctlin_09_outcontroller_set(data[1]);
+        this->ctlin_09_value_set(data[2]);
+        this->ctlin_09_status = 0;
+    }
 }
 
 void p_01_perform(
@@ -2597,163 +3202,237 @@ void p_01_perform(
 void gen_01_perform(
     const Sample * in1,
     const Sample * in2,
-    number Mix,
-    number clipType,
-    number clipNeg,
     number clipPos,
+    number clipNeg,
+    number clipType,
+    number feedCoe_up,
+    number feedCoe_down,
+    number foldMode,
+    number Mix,
     SampleValue * out1,
     SampleValue * out2,
     Index n
 ) {
+    auto __gen_01_superhardClipValR_value = this->gen_01_superhardClipValR_value;
+    auto __gen_01_superhardClipValL_value = this->gen_01_superhardClipValL_value;
+    auto __gen_01_hardClipValR_value = this->gen_01_hardClipValR_value;
+    auto __gen_01_hardClipValL_value = this->gen_01_hardClipValL_value;
+    auto __gen_01_softClipValR_value = this->gen_01_softClipValR_value;
+    auto __gen_01_softClipValL_value = this->gen_01_softClipValL_value;
     Index i;
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < (Index)n; i++) {
         number mixed1L_0 = 0;
         number mixed2L_1 = 0;
         number mixed1R_2 = 0;
         number mixed2R_3 = 0;
-        number softClip_4 = 0;
+        number current_fbL_5 = (this->gen_01_change_4_next(in1[(Index)i]) > 0 ? feedCoe_up : feedCoe_down);
+        number current_fbR_7 = (this->gen_01_change_6_next(in2[(Index)i]) > 0 ? feedCoe_up : feedCoe_down);
+        number softClip_8 = 0;
 
         {
-            auto val2_7 = clipNeg;
-            auto val1_6 = clipPos;
-            auto input_5 = in1[(Index)i];
-            number value1_8 = 0;
-            number value2_9 = 0;
-            auto scaledClip1_10 = this->scale(val1_6, 0, 100, 1, 10, 1);
-            auto scaledClip2_11 = this->scale(val2_7, 0, 100, 1, 10, 1);
-            auto scaledClip3_12 = this->scale(val1_6, 0, 100, 1.9, 1, 0.2);
-            auto scaledClip4_13 = this->scale(val2_7, 0, 100, 1.9, 1, 0.2);
+            auto foldMode_12 = foldMode;
+            auto val2_11 = clipNeg;
+            auto val1_10 = clipPos;
+            auto input_9 = in1[(Index)i] + current_fbL_5 * __gen_01_softClipValL_value;
+            number value0_13 = 0;
+            number value1_14 = 0;
+            number value2_15 = 0;
+            auto scaledClip1_16 = this->scale(val1_10, 100, 0, 0, 1, 1);
+            auto scaledClip2_17 = this->scale(val2_11, 100, 0, 0, 1, 1);
+            auto scaledClip3_18 = this->scale(val1_10, 0, 100, 1, 10, 1);
+            auto scaledClip4_19 = this->scale(val2_11, 0, 100, 1, 10, 1);
+            auto scaledClip5_20 = this->scale(val1_10, 0, 100, 1.9, 1, 0.2);
+            auto scaledClip6_21 = this->scale(val2_11, 0, 100, 1.9, 1, 0.2);
 
-            if (input_5 >= 0) {
-                value1_8 = scaledClip3_12 * rnbo_atan(input_5 * scaledClip1_10);
+            if (foldMode_12 == 0) {
+                value0_13 = input_9;
             } else {
-                value2_9 = scaledClip4_13 * rnbo_atan(input_5 * scaledClip2_11);
+                value0_13 = this->fold(input_9, -scaledClip2_17, scaledClip1_16);
             }
 
-            softClip_4 = (value1_8 + value2_9) * 2 / 3.14159265358979323846;
-        }
-
-        number softClipValL_14 = softClip_4;
-        number softClip_15 = 0;
-
-        {
-            auto val2_18 = clipNeg;
-            auto val1_17 = clipPos;
-            auto input_16 = in2[(Index)i];
-            number value1_19 = 0;
-            number value2_20 = 0;
-            auto scaledClip1_21 = this->scale(val1_17, 0, 100, 1, 10, 1);
-            auto scaledClip2_22 = this->scale(val2_18, 0, 100, 1, 10, 1);
-            auto scaledClip3_23 = this->scale(val1_17, 0, 100, 1.9, 1, 0.2);
-            auto scaledClip4_24 = this->scale(val2_18, 0, 100, 1.9, 1, 0.2);
-
-            if (input_16 >= 0) {
-                value1_19 = scaledClip3_23 * rnbo_atan(input_16 * scaledClip1_21);
+            if (input_9 >= 0) {
+                value1_14 = scaledClip5_20 * rnbo_atan(value0_13 * scaledClip3_18);
             } else {
-                value2_20 = scaledClip4_24 * rnbo_atan(input_16 * scaledClip2_22);
+                value2_15 = scaledClip6_21 * rnbo_atan(value0_13 * scaledClip4_19);
             }
 
-            softClip_15 = (value1_19 + value2_20) * 2 / 3.14159265358979323846;
+            softClip_8 = ((value1_14 + value2_15) * 2 / (number)3.141592653589793 > 1 ? 1 : ((value1_14 + value2_15) * 2 / (number)3.141592653589793 < -1 ? -1 : (value1_14 + value2_15) * 2 / (number)3.141592653589793));
         }
 
-        number softClipValR_25 = softClip_15;
-        number hardClip_26 = 0;
+        __gen_01_softClipValL_value = softClip_8;
+        number softClip_22 = 0;
 
         {
-            auto val2_29 = clipNeg;
-            auto val1_28 = clipPos;
-            auto input_27 = in1[(Index)i];
-            number value1_30 = 0;
-            number value2_31 = 0;
-            auto scaledClip1_32 = this->scale(val1_28, 0, 100, 1, 10, 1);
-            auto scaledClip2_33 = this->scale(val2_29, 0, 100, 1, 10, 1);
-            auto scaledClip3_34 = this->scale(val1_28, 0, 100, 1.25, 0.9, 0.15);
-            auto scaledClip4_35 = this->scale(val2_29, 0, 100, 1.25, 0.9, 0.15);
+            auto foldMode_26 = foldMode;
+            auto val2_25 = clipNeg;
+            auto val1_24 = clipPos;
+            auto input_23 = in2[(Index)i] + current_fbR_7 * __gen_01_softClipValR_value;
+            number value0_27 = 0;
+            number value1_28 = 0;
+            number value2_29 = 0;
+            auto scaledClip1_30 = this->scale(val1_24, 100, 0, 0, 1, 1);
+            auto scaledClip2_31 = this->scale(val2_25, 100, 0, 0, 1, 1);
+            auto scaledClip3_32 = this->scale(val1_24, 0, 100, 1, 10, 1);
+            auto scaledClip4_33 = this->scale(val2_25, 0, 100, 1, 10, 1);
+            auto scaledClip5_34 = this->scale(val1_24, 0, 100, 1.9, 1, 0.2);
+            auto scaledClip6_35 = this->scale(val2_25, 0, 100, 1.9, 1, 0.2);
 
-            if (input_27 >= 0) {
-                value1_30 = scaledClip3_34 * rnbo_tanh(input_27 * scaledClip1_32);
+            if (foldMode_26 == 0) {
+                value0_27 = input_23;
             } else {
-                value2_31 = scaledClip4_35 * rnbo_tanh(input_27 * scaledClip2_33);
+                value0_27 = this->fold(input_23, -scaledClip2_31, scaledClip1_30);
             }
 
-            hardClip_26 = value1_30 + value2_31;
-        }
-
-        number hardClipValL_36 = hardClip_26;
-        number hardClip_37 = 0;
-
-        {
-            auto val2_40 = clipNeg;
-            auto val1_39 = clipPos;
-            auto input_38 = in2[(Index)i];
-            number value1_41 = 0;
-            number value2_42 = 0;
-            auto scaledClip1_43 = this->scale(val1_39, 0, 100, 1, 10, 1);
-            auto scaledClip2_44 = this->scale(val2_40, 0, 100, 1, 10, 1);
-            auto scaledClip3_45 = this->scale(val1_39, 0, 100, 1.25, 0.9, 0.15);
-            auto scaledClip4_46 = this->scale(val2_40, 0, 100, 1.25, 0.9, 0.15);
-
-            if (input_38 >= 0) {
-                value1_41 = scaledClip3_45 * rnbo_tanh(input_38 * scaledClip1_43);
+            if (input_23 >= 0) {
+                value1_28 = scaledClip5_34 * rnbo_atan(value0_27 * scaledClip3_32);
             } else {
-                value2_42 = scaledClip4_46 * rnbo_tanh(input_38 * scaledClip2_44);
+                value2_29 = scaledClip6_35 * rnbo_atan(value0_27 * scaledClip4_33);
             }
 
-            hardClip_37 = value1_41 + value2_42;
+            softClip_22 = ((value1_28 + value2_29) * 2 / (number)3.141592653589793 > 1 ? 1 : ((value1_28 + value2_29) * 2 / (number)3.141592653589793 < -1 ? -1 : (value1_28 + value2_29) * 2 / (number)3.141592653589793));
         }
 
-        number hardClipValR_47 = hardClip_37;
-        number superhardClip_48 = 0;
+        __gen_01_softClipValR_value = softClip_22;
+        number hardClip_36 = 0;
 
         {
-            auto val2_51 = clipNeg;
-            auto val1_50 = clipPos;
-            auto input_49 = in1[(Index)i];
-            auto scaledClip1_52 = this->scale(val1_50, 100, 0, 0, 1, 1);
-            auto scaledClip2_53 = this->scale(val2_51, 100, 0, 0, 1, 1);
-            number div5_54 = fixnan(rnbo_pow(scaledClip1_52 * 10, 2)) / (number)100;
-            number div6_55 = fixnan(rnbo_pow(scaledClip2_53 * 10, 2)) / (number)100;
-            number clamp8_56 = (in1[(Index)i] > div5_54 ? div5_54 : (in1[(Index)i] < -div6_55 ? -div6_55 : in1[(Index)i]));
-            number div10_57 = (-div6_55 + div5_54) / (number)2;
-            number div13_58 = (div5_54 + div6_55) / (number)2;
-            number rdiv14_59 = (div13_58 == 0. ? 0. : (number)1 / div13_58);
-            superhardClip_48 = (clamp8_56 - div10_57) * rdiv14_59 * 0.9;
+            auto foldMode_40 = foldMode;
+            auto val2_39 = clipNeg;
+            auto val1_38 = clipPos;
+            auto input_37 = in1[(Index)i] + current_fbL_5 * __gen_01_hardClipValL_value;
+            number value0_41 = 0;
+            number value1_42 = 0;
+            number value2_43 = 0;
+            auto scaledClip1_44 = this->scale(val1_38, 100, 0, 0, 1, 1);
+            auto scaledClip2_45 = this->scale(val2_39, 100, 0, 0, 1, 1);
+            auto scaledClip3_46 = this->scale(val1_38, 0, 100, 1, 10, 1);
+            auto scaledClip4_47 = this->scale(val2_39, 0, 100, 1, 10, 1);
+            auto scaledClip5_48 = this->scale(val1_38, 0, 100, 1.25, 0.9, 0.15);
+            auto scaledClip6_49 = this->scale(val2_39, 0, 100, 1.25, 0.9, 0.15);
+
+            if (foldMode_40 == 0) {
+                value0_41 = input_37;
+            } else {
+                value0_41 = this->fold(input_37, -scaledClip2_45, scaledClip1_44);
+            }
+
+            if (input_37 >= 0) {
+                value1_42 = scaledClip5_48 * rnbo_tanh(value0_41 * scaledClip3_46);
+            } else {
+                value2_43 = scaledClip6_49 * rnbo_tanh(value0_41 * scaledClip4_47);
+            }
+
+            hardClip_36 = (value1_42 + value2_43 > 1 ? 1 : (value1_42 + value2_43 < -1 ? -1 : value1_42 + value2_43));
         }
 
-        number superhardClipValL_60 = superhardClip_48;
-        number superhardClip_61 = 0;
+        __gen_01_hardClipValL_value = hardClip_36;
+        number hardClip_50 = 0;
 
         {
-            auto val2_64 = clipNeg;
-            auto val1_63 = clipPos;
-            auto input_62 = in2[(Index)i];
-            auto scaledClip1_65 = this->scale(val1_63, 100, 0, 0, 1, 1);
-            auto scaledClip2_66 = this->scale(val2_64, 100, 0, 0, 1, 1);
-            number div5_67 = fixnan(rnbo_pow(scaledClip1_65 * 10, 2)) / (number)100;
-            number div6_68 = fixnan(rnbo_pow(scaledClip2_66 * 10, 2)) / (number)100;
-            number clamp8_69 = (in1[(Index)i] > div5_67 ? div5_67 : (in1[(Index)i] < -div6_68 ? -div6_68 : in1[(Index)i]));
-            number div10_70 = (-div6_68 + div5_67) / (number)2;
-            number div13_71 = (div5_67 + div6_68) / (number)2;
-            number rdiv14_72 = (div13_71 == 0. ? 0. : (number)1 / div13_71);
-            superhardClip_61 = (clamp8_69 - div10_70) * rdiv14_72 * 0.9;
+            auto foldMode_54 = foldMode;
+            auto val2_53 = clipNeg;
+            auto val1_52 = clipPos;
+            auto input_51 = in2[(Index)i] + current_fbR_7 * __gen_01_hardClipValR_value;
+            number value0_55 = 0;
+            number value1_56 = 0;
+            number value2_57 = 0;
+            auto scaledClip1_58 = this->scale(val1_52, 100, 0, 0, 1, 1);
+            auto scaledClip2_59 = this->scale(val2_53, 100, 0, 0, 1, 1);
+            auto scaledClip3_60 = this->scale(val1_52, 0, 100, 1, 10, 1);
+            auto scaledClip4_61 = this->scale(val2_53, 0, 100, 1, 10, 1);
+            auto scaledClip5_62 = this->scale(val1_52, 0, 100, 1.25, 0.9, 0.15);
+            auto scaledClip6_63 = this->scale(val2_53, 0, 100, 1.25, 0.9, 0.15);
+
+            if (foldMode_54 == 0) {
+                value0_55 = input_51;
+            } else {
+                value0_55 = this->fold(input_51, -scaledClip2_59, scaledClip1_58);
+            }
+
+            if (input_51 >= 0) {
+                value1_56 = scaledClip5_62 * rnbo_tanh(value0_55 * scaledClip3_60);
+            } else {
+                value2_57 = scaledClip6_63 * rnbo_tanh(value0_55 * scaledClip4_61);
+            }
+
+            hardClip_50 = (value1_56 + value2_57 > 1 ? 1 : (value1_56 + value2_57 < -1 ? -1 : value1_56 + value2_57));
         }
 
-        number superhardClipValR_73 = superhardClip_61;
+        __gen_01_hardClipValR_value = hardClip_50;
+        number superhardClip_64 = 0;
+
+        {
+            auto foldMode_68 = foldMode;
+            auto val2_67 = clipNeg;
+            auto val1_66 = clipPos;
+            auto input_65 = in1[(Index)i] + current_fbL_5 * __gen_01_superhardClipValL_value;
+            auto scaledClip1_69 = this->scale(val1_66, 100, 0, 0, 1, 1);
+            auto scaledClip2_70 = this->scale(val2_67, 100, 0, 0, 1, 1);
+            number div5_71 = fixnan(rnbo_pow(scaledClip1_69 * 10, 2)) / (number)100;
+            number div6_72 = fixnan(rnbo_pow(scaledClip2_70 * 10, 2)) / (number)100;
+            number value1_73 = 0;
+
+            if (foldMode_68 == 0) {
+                value1_73 = (input_65 > div5_71 ? div5_71 : (input_65 < -div6_72 ? -div6_72 : input_65));
+            } else {
+                value1_73 = this->fold(input_65, -div6_72, div5_71);
+            }
+
+            number div10_74 = (-div6_72 + div5_71) / (number)2;
+            number div13_75 = (div5_71 + div6_72) / (number)2;
+            number rdiv14_76 = (div13_75 == 0. ? 0. : (number)1 / div13_75);
+            superhardClip_64 = ((value1_73 - div10_74) * rdiv14_76 * 0.9 > 1 ? 1 : ((value1_73 - div10_74) * rdiv14_76 * 0.9 < -1 ? -1 : (value1_73 - div10_74) * rdiv14_76 * 0.9));
+        }
+
+        __gen_01_superhardClipValL_value = superhardClip_64;
+        number superhardClip_77 = 0;
+
+        {
+            auto foldMode_81 = foldMode;
+            auto val2_80 = clipNeg;
+            auto val1_79 = clipPos;
+            auto input_78 = in2[(Index)i] + current_fbR_7 * __gen_01_superhardClipValR_value;
+            auto scaledClip1_82 = this->scale(val1_79, 100, 0, 0, 1, 1);
+            auto scaledClip2_83 = this->scale(val2_80, 100, 0, 0, 1, 1);
+            number div5_84 = fixnan(rnbo_pow(scaledClip1_82 * 10, 2)) / (number)100;
+            number div6_85 = fixnan(rnbo_pow(scaledClip2_83 * 10, 2)) / (number)100;
+            number value1_86 = 0;
+
+            if (foldMode_81 == 0) {
+                value1_86 = (input_78 > div5_84 ? div5_84 : (input_78 < -div6_85 ? -div6_85 : input_78));
+            } else {
+                value1_86 = this->fold(input_78, -div6_85, div5_84);
+            }
+
+            number div10_87 = (-div6_85 + div5_84) / (number)2;
+            number div13_88 = (div5_84 + div6_85) / (number)2;
+            number rdiv14_89 = (div13_88 == 0. ? 0. : (number)1 / div13_88);
+            superhardClip_77 = ((value1_86 - div10_87) * rdiv14_89 * 0.9 > 1 ? 1 : ((value1_86 - div10_87) * rdiv14_89 * 0.9 < -1 ? -1 : (value1_86 - div10_87) * rdiv14_89 * 0.9));
+        }
+
+        __gen_01_superhardClipValR_value = superhardClip_77;
 
         if (0 <= clipType && clipType <= 1) {
-            mixed1L_0 = softClipValL_14 + clipType * (hardClipValL_36 - softClipValL_14);
-            mixed1R_2 = softClipValR_25 + clipType * (hardClipValR_47 - softClipValR_25);
+            mixed1L_0 = __gen_01_softClipValL_value + clipType * (__gen_01_hardClipValL_value - __gen_01_softClipValL_value);
+            mixed1R_2 = __gen_01_softClipValR_value + clipType * (__gen_01_hardClipValR_value - __gen_01_softClipValR_value);
         } else {
-            mixed2L_1 = hardClipValL_36 + (clipType - 1) * (superhardClipValL_60 - hardClipValL_36);
-            mixed2R_3 = hardClipValR_47 + (clipType - 1) * (superhardClipValR_73 - hardClipValR_47);
+            mixed2L_1 = __gen_01_hardClipValL_value + (clipType - 1) * (__gen_01_superhardClipValL_value - __gen_01_hardClipValL_value);
+            mixed2R_3 = __gen_01_hardClipValR_value + (clipType - 1) * (__gen_01_superhardClipValR_value - __gen_01_hardClipValR_value);
         }
 
-        number expr_1_74 = in1[(Index)i] + Mix / (number)100 * (mixed1L_0 + mixed2L_1 - in1[(Index)i]);
-        number expr_2_75 = in2[(Index)i] + Mix / (number)100 * (mixed1R_2 + mixed2R_3 - in2[(Index)i]);
-        out2[(Index)i] = expr_2_75;
-        out1[(Index)i] = expr_1_74;
+        number expr_1_90 = in1[(Index)i] + Mix / (number)100 * (mixed1L_0 + mixed2L_1 - in1[(Index)i]);
+        number expr_2_91 = in2[(Index)i] + Mix / (number)100 * (mixed1R_2 + mixed2R_3 - in2[(Index)i]);
+        out1[(Index)i] = expr_1_90;
+        out2[(Index)i] = expr_2_91;
     }
+
+    this->gen_01_softClipValL_value = __gen_01_softClipValL_value;
+    this->gen_01_softClipValR_value = __gen_01_softClipValR_value;
+    this->gen_01_hardClipValL_value = __gen_01_hardClipValL_value;
+    this->gen_01_hardClipValR_value = __gen_01_hardClipValR_value;
+    this->gen_01_superhardClipValL_value = __gen_01_superhardClipValL_value;
+    this->gen_01_superhardClipValR_value = __gen_01_superhardClipValR_value;
 }
 
 void stackprotect_perform(Index n) {
@@ -2761,6 +3440,130 @@ void stackprotect_perform(Index n) {
     auto __stackprotect_count = this->stackprotect_count;
     __stackprotect_count = 0;
     this->stackprotect_count = __stackprotect_count;
+}
+
+number gen_01_softClipValL_getvalue() {
+    return this->gen_01_softClipValL_value;
+}
+
+void gen_01_softClipValL_setvalue(number val) {
+    this->gen_01_softClipValL_value = val;
+}
+
+void gen_01_softClipValL_reset() {
+    this->gen_01_softClipValL_value = 0;
+}
+
+void gen_01_softClipValL_init() {
+    this->gen_01_softClipValL_value = 0;
+}
+
+number gen_01_softClipValR_getvalue() {
+    return this->gen_01_softClipValR_value;
+}
+
+void gen_01_softClipValR_setvalue(number val) {
+    this->gen_01_softClipValR_value = val;
+}
+
+void gen_01_softClipValR_reset() {
+    this->gen_01_softClipValR_value = 0;
+}
+
+void gen_01_softClipValR_init() {
+    this->gen_01_softClipValR_value = 0;
+}
+
+number gen_01_hardClipValL_getvalue() {
+    return this->gen_01_hardClipValL_value;
+}
+
+void gen_01_hardClipValL_setvalue(number val) {
+    this->gen_01_hardClipValL_value = val;
+}
+
+void gen_01_hardClipValL_reset() {
+    this->gen_01_hardClipValL_value = 0;
+}
+
+void gen_01_hardClipValL_init() {
+    this->gen_01_hardClipValL_value = 0;
+}
+
+number gen_01_hardClipValR_getvalue() {
+    return this->gen_01_hardClipValR_value;
+}
+
+void gen_01_hardClipValR_setvalue(number val) {
+    this->gen_01_hardClipValR_value = val;
+}
+
+void gen_01_hardClipValR_reset() {
+    this->gen_01_hardClipValR_value = 0;
+}
+
+void gen_01_hardClipValR_init() {
+    this->gen_01_hardClipValR_value = 0;
+}
+
+number gen_01_superhardClipValL_getvalue() {
+    return this->gen_01_superhardClipValL_value;
+}
+
+void gen_01_superhardClipValL_setvalue(number val) {
+    this->gen_01_superhardClipValL_value = val;
+}
+
+void gen_01_superhardClipValL_reset() {
+    this->gen_01_superhardClipValL_value = 0;
+}
+
+void gen_01_superhardClipValL_init() {
+    this->gen_01_superhardClipValL_value = 0;
+}
+
+number gen_01_superhardClipValR_getvalue() {
+    return this->gen_01_superhardClipValR_value;
+}
+
+void gen_01_superhardClipValR_setvalue(number val) {
+    this->gen_01_superhardClipValR_value = val;
+}
+
+void gen_01_superhardClipValR_reset() {
+    this->gen_01_superhardClipValR_value = 0;
+}
+
+void gen_01_superhardClipValR_init() {
+    this->gen_01_superhardClipValR_value = 0;
+}
+
+number gen_01_change_4_next(number x) {
+    number temp = x - this->gen_01_change_4_prev;
+    this->gen_01_change_4_prev = x;
+    return (temp > 0. ? 1. : (temp < 0. ? -1. : 0));
+}
+
+void gen_01_change_4_init() {
+    this->gen_01_change_4_prev = 0;
+}
+
+void gen_01_change_4_reset() {
+    this->gen_01_change_4_prev = 0;
+}
+
+number gen_01_change_6_next(number x) {
+    number temp = x - this->gen_01_change_6_prev;
+    this->gen_01_change_6_prev = x;
+    return (temp > 0. ? 1. : (temp < 0. ? -1. : 0));
+}
+
+void gen_01_change_6_init() {
+    this->gen_01_change_6_prev = 0;
+}
+
+void gen_01_change_6_reset() {
+    this->gen_01_change_6_prev = 0;
 }
 
 void param_01_getPresetValue(PatcherStateInterface& preset) {
@@ -2829,207 +3632,42 @@ void param_06_setPresetValue(PatcherStateInterface& preset) {
     this->param_06_value_set(preset["value"]);
 }
 
-Index globaltransport_getSampleOffset(MillisecondTime time) {
-    return this->mstosamps(this->maximum(0, time - this->getEngine()->getCurrentTime()));
+void param_07_getPresetValue(PatcherStateInterface& preset) {
+    preset["value"] = this->param_07_value;
 }
 
-number globaltransport_getTempoAtSample(SampleIndex sampleOffset) {
-    return (sampleOffset >= 0 && sampleOffset < this->vs ? this->globaltransport_tempo[(Index)sampleOffset] : this->globaltransport_lastTempo);
-}
-
-number globaltransport_getStateAtSample(SampleIndex sampleOffset) {
-    return (sampleOffset >= 0 && sampleOffset < this->vs ? this->globaltransport_state[(Index)sampleOffset] : this->globaltransport_lastState);
-}
-
-number globaltransport_getState(MillisecondTime time) {
-    return this->globaltransport_getStateAtSample(this->globaltransport_getSampleOffset(time));
-}
-
-number globaltransport_getBeatTime(MillisecondTime time) {
-    number i = 2;
-
-    while (i < this->globaltransport_beatTimeChanges->length && this->globaltransport_beatTimeChanges[(Index)(i + 1)] <= time) {
-        i += 2;
-    }
-
-    i -= 2;
-    number beatTimeBase = this->globaltransport_beatTimeChanges[(Index)i];
-
-    if (this->globaltransport_getState(time) == 0)
-        return beatTimeBase;
-
-    number beatTimeBaseMsTime = this->globaltransport_beatTimeChanges[(Index)(i + 1)];
-    number diff = time - beatTimeBaseMsTime;
-    return beatTimeBase + this->mstobeats(diff);
-}
-
-bool globaltransport_setTempo(MillisecondTime time, number tempo, bool notify) {
-    if ((bool)(notify)) {
-        this->processTempoEvent(time, tempo);
-        this->globaltransport_notify = true;
-    } else {
-        Index offset = (Index)(this->globaltransport_getSampleOffset(time));
-
-        if (this->globaltransport_getTempoAtSample(offset) != tempo) {
-            this->globaltransport_beatTimeChanges->push(this->globaltransport_getBeatTime(time));
-            this->globaltransport_beatTimeChanges->push(time);
-            fillSignal(this->globaltransport_tempo, this->vs, tempo, offset);
-            this->globaltransport_lastTempo = tempo;
-            this->globaltransport_tempoNeedsReset = true;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-number globaltransport_getTempo(MillisecondTime time) {
-    return this->globaltransport_getTempoAtSample(this->globaltransport_getSampleOffset(time));
-}
-
-bool globaltransport_setState(MillisecondTime time, number state, bool notify) {
-    if ((bool)(notify)) {
-        this->processTransportEvent(time, TransportState(state));
-        this->globaltransport_notify = true;
-    } else {
-        Index offset = (Index)(this->globaltransport_getSampleOffset(time));
-
-        if (this->globaltransport_getStateAtSample(offset) != state) {
-            fillSignal(this->globaltransport_state, this->vs, state, offset);
-            this->globaltransport_lastState = TransportState(state);
-            this->globaltransport_stateNeedsReset = true;
-
-            if (state == 0) {
-                this->globaltransport_beatTimeChanges->push(this->globaltransport_getBeatTime(time));
-                this->globaltransport_beatTimeChanges->push(time);
-            }
-
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool globaltransport_setBeatTime(MillisecondTime time, number beattime, bool notify) {
-    if ((bool)(notify)) {
-        this->processBeatTimeEvent(time, beattime);
-        this->globaltransport_notify = true;
-        return false;
-    } else {
-        bool beatTimeHasChanged = false;
-        float oldBeatTime = (float)(this->globaltransport_getBeatTime(time));
-        float newBeatTime = (float)(beattime);
-
-        if (oldBeatTime != newBeatTime) {
-            beatTimeHasChanged = true;
-        }
-
-        this->globaltransport_beatTimeChanges->push(beattime);
-        this->globaltransport_beatTimeChanges->push(time);
-        return beatTimeHasChanged;
-    }
-}
-
-number globaltransport_getBeatTimeAtSample(SampleIndex sampleOffset) {
-    auto msOffset = this->sampstoms(sampleOffset);
-    return this->globaltransport_getBeatTime(this->getEngine()->getCurrentTime() + msOffset);
-}
-
-array<number, 2> globaltransport_getTimeSignature(MillisecondTime time) {
-    number i = 3;
-
-    while (i < this->globaltransport_timeSignatureChanges->length && this->globaltransport_timeSignatureChanges[(Index)(i + 2)] <= time) {
-        i += 3;
-    }
-
-    i -= 3;
-
-    return {
-        this->globaltransport_timeSignatureChanges[(Index)i],
-        this->globaltransport_timeSignatureChanges[(Index)(i + 1)]
-    };
-}
-
-array<number, 2> globaltransport_getTimeSignatureAtSample(SampleIndex sampleOffset) {
-    auto msOffset = this->sampstoms(sampleOffset);
-    return this->globaltransport_getTimeSignature(this->getEngine()->getCurrentTime() + msOffset);
-}
-
-bool globaltransport_setTimeSignature(MillisecondTime time, number numerator, number denominator, bool notify) {
-    if ((bool)(notify)) {
-        this->processTimeSignatureEvent(time, (int)(numerator), (int)(denominator));
-        this->globaltransport_notify = true;
-    } else {
-        array<number, 2> currentSig = this->globaltransport_getTimeSignature(time);
-
-        if (currentSig[0] != numerator || currentSig[1] != denominator) {
-            this->globaltransport_timeSignatureChanges->push(numerator);
-            this->globaltransport_timeSignatureChanges->push(denominator);
-            this->globaltransport_timeSignatureChanges->push(time);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-void globaltransport_advance() {
-    if ((bool)(this->globaltransport_tempoNeedsReset)) {
-        fillSignal(this->globaltransport_tempo, this->vs, this->globaltransport_lastTempo);
-        this->globaltransport_tempoNeedsReset = false;
-
-        if ((bool)(this->globaltransport_notify)) {
-            this->getEngine()->sendTempoEvent(this->globaltransport_lastTempo);
-        }
-    }
-
-    if ((bool)(this->globaltransport_stateNeedsReset)) {
-        fillSignal(this->globaltransport_state, this->vs, this->globaltransport_lastState);
-        this->globaltransport_stateNeedsReset = false;
-
-        if ((bool)(this->globaltransport_notify)) {
-            this->getEngine()->sendTransportEvent(TransportState(this->globaltransport_lastState));
-        }
-    }
-
-    if (this->globaltransport_beatTimeChanges->length > 2) {
-        this->globaltransport_beatTimeChanges[0] = this->globaltransport_beatTimeChanges[(Index)(this->globaltransport_beatTimeChanges->length - 2)];
-        this->globaltransport_beatTimeChanges[1] = this->globaltransport_beatTimeChanges[(Index)(this->globaltransport_beatTimeChanges->length - 1)];
-        this->globaltransport_beatTimeChanges->length = 2;
-
-        if ((bool)(this->globaltransport_notify)) {
-            this->getEngine()->sendBeatTimeEvent(this->globaltransport_beatTimeChanges[0]);
-        }
-    }
-
-    if (this->globaltransport_timeSignatureChanges->length > 3) {
-        this->globaltransport_timeSignatureChanges[0] = this->globaltransport_timeSignatureChanges[(Index)(this->globaltransport_timeSignatureChanges->length - 3)];
-        this->globaltransport_timeSignatureChanges[1] = this->globaltransport_timeSignatureChanges[(Index)(this->globaltransport_timeSignatureChanges->length - 2)];
-        this->globaltransport_timeSignatureChanges[2] = this->globaltransport_timeSignatureChanges[(Index)(this->globaltransport_timeSignatureChanges->length - 1)];
-        this->globaltransport_timeSignatureChanges->length = 3;
-
-        if ((bool)(this->globaltransport_notify)) {
-            this->getEngine()->sendTimeSignatureEvent(
-                (int)(this->globaltransport_timeSignatureChanges[0]),
-                (int)(this->globaltransport_timeSignatureChanges[1])
-            );
-        }
-    }
-
-    this->globaltransport_notify = false;
-}
-
-void globaltransport_dspsetup(bool force) {
-    if ((bool)(this->globaltransport_setupDone) && (bool)(!(bool)(force)))
+void param_07_setPresetValue(PatcherStateInterface& preset) {
+    if ((bool)(stateIsEmpty(preset)))
         return;
 
-    fillSignal(this->globaltransport_tempo, this->vs, this->globaltransport_lastTempo);
-    this->globaltransport_tempoNeedsReset = false;
-    fillSignal(this->globaltransport_state, this->vs, this->globaltransport_lastState);
-    this->globaltransport_stateNeedsReset = false;
-    this->globaltransport_setupDone = true;
+    this->param_07_value_set(preset["value"]);
 }
+
+void param_08_getPresetValue(PatcherStateInterface& preset) {
+    preset["value"] = this->param_08_value;
+}
+
+void param_08_setPresetValue(PatcherStateInterface& preset) {
+    if ((bool)(stateIsEmpty(preset)))
+        return;
+
+    this->param_08_value_set(preset["value"]);
+}
+
+void param_09_getPresetValue(PatcherStateInterface& preset) {
+    preset["value"] = this->param_09_value;
+}
+
+void param_09_setPresetValue(PatcherStateInterface& preset) {
+    if ((bool)(stateIsEmpty(preset)))
+        return;
+
+    this->param_09_value_set(preset["value"]);
+}
+
+void globaltransport_advance() {}
+
+void globaltransport_dspsetup(bool ) {}
 
 bool stackprotect_check() {
     this->stackprotect_count++;
@@ -3042,15 +3680,46 @@ bool stackprotect_check() {
     return false;
 }
 
-void updateTime(MillisecondTime time) {
+Index getPatcherSerial() const {
+    return 0;
+}
+
+void sendParameter(ParameterIndex index, bool ignoreValue) {
+    this->getEngine()->notifyParameterValueChanged(index, (ignoreValue ? 0 : this->getParameterValue(index)), ignoreValue);
+}
+
+void scheduleParamInit(ParameterIndex index, Index order) {
+    this->paramInitIndices->push(index);
+    this->paramInitOrder->push(order);
+}
+
+void processParamInitEvents() {
+    this->listquicksort(
+        this->paramInitOrder,
+        this->paramInitIndices,
+        0,
+        (int)(this->paramInitOrder->length - 1),
+        true
+    );
+
+    for (Index i = 0; i < this->paramInitOrder->length; i++) {
+        this->getEngine()->scheduleParameterBang(this->paramInitIndices[i], 0);
+    }
+}
+
+void updateTime(MillisecondTime time, EXTERNALENGINE* engine, bool inProcess = false) {
+    RNBO_UNUSED(inProcess);
+    RNBO_UNUSED(engine);
     this->_currentTime = time;
-    this->sampleOffsetIntoNextAudioBuffer = (SampleIndex)(rnbo_fround(this->msToSamps(time - this->getEngine()->getCurrentTime(), this->sr)));
+    auto offset = rnbo_fround(this->msToSamps(time - this->getEngine()->getCurrentTime(), this->sr));
 
-    if (this->sampleOffsetIntoNextAudioBuffer >= (SampleIndex)(this->vs))
-        this->sampleOffsetIntoNextAudioBuffer = (SampleIndex)(this->vs) - 1;
+    if (offset >= (SampleIndex)(this->vs))
+        offset = (SampleIndex)(this->vs) - 1;
 
-    if (this->sampleOffsetIntoNextAudioBuffer < 0)
-        this->sampleOffsetIntoNextAudioBuffer = 0;
+    if (offset < 0)
+        offset = 0;
+
+    this->sampleOffsetIntoNextAudioBuffer = (Index)(offset);
 }
 
 void assign_defaults()
@@ -3058,16 +3727,76 @@ void assign_defaults()
     p_01_target = 0;
     gen_01_in1 = 0;
     gen_01_in2 = 0;
-    gen_01_Mix = 0;
-    gen_01_clipType = 0;
-    gen_01_clipNeg = 0;
     gen_01_clipPos = 0;
+    gen_01_clipNeg = 0;
+    gen_01_clipType = 0;
+    gen_01_feedCoe_up = 0;
+    gen_01_feedCoe_down = 0;
+    gen_01_foldMode = 0;
+    gen_01_Mix = 0;
     param_01_value = 0;
     param_02_value = 0;
     param_03_value = 0;
-    param_04_value = 0;
-    param_05_value = 0;
+    param_04_value = 0.5;
+    param_05_value = 0.5;
     param_06_value = 0;
+    param_07_value = 0;
+    param_08_value = 0;
+    param_09_value = 0;
+    ctlin_01_input = 0;
+    ctlin_01_controller = 0;
+    ctlin_01_channel = -1;
+    expr_01_in1 = 0;
+    expr_01_in2 = 0.007874015748;
+    expr_01_out1 = 0;
+    ctlin_02_input = 0;
+    ctlin_02_controller = 0;
+    ctlin_02_channel = -1;
+    expr_02_in1 = 0;
+    expr_02_in2 = 0.007874015748;
+    expr_02_out1 = 0;
+    ctlin_03_input = 0;
+    ctlin_03_controller = 0;
+    ctlin_03_channel = -1;
+    expr_03_in1 = 0;
+    expr_03_in2 = 0.007874015748;
+    expr_03_out1 = 0;
+    ctlin_04_input = 0;
+    ctlin_04_controller = 0;
+    ctlin_04_channel = -1;
+    expr_04_in1 = 0;
+    expr_04_in2 = 0.007874015748;
+    expr_04_out1 = 0;
+    ctlin_05_input = 0;
+    ctlin_05_controller = 0;
+    ctlin_05_channel = -1;
+    expr_05_in1 = 0;
+    expr_05_in2 = 0.007874015748;
+    expr_05_out1 = 0;
+    ctlin_06_input = 0;
+    ctlin_06_controller = 0;
+    ctlin_06_channel = -1;
+    expr_06_in1 = 0;
+    expr_06_in2 = 0.007874015748;
+    expr_06_out1 = 0;
+    ctlin_07_input = 0;
+    ctlin_07_controller = 0;
+    ctlin_07_channel = -1;
+    expr_07_in1 = 0;
+    expr_07_in2 = 0.007874015748;
+    expr_07_out1 = 0;
+    ctlin_08_input = 0;
+    ctlin_08_controller = 0;
+    ctlin_08_channel = -1;
+    expr_08_in1 = 0;
+    expr_08_in2 = 0.007874015748;
+    expr_08_out1 = 0;
+    ctlin_09_input = 0;
+    ctlin_09_controller = 0;
+    ctlin_09_channel = -1;
+    expr_09_in1 = 0;
+    expr_09_in2 = 0.007874015748;
+    expr_09_out1 = 0;
     _currentTime = 0;
     audioProcessSampleCount = 0;
     sampleOffsetIntoNextAudioBuffer = 0;
@@ -3079,23 +3808,53 @@ void assign_defaults()
     vs = 0;
     maxvs = 0;
     sr = 44100;
-    invsr = 0.00002267573696;
+    invsr = 0.000022675736961451248;
+    gen_01_softClipValL_value = 0;
+    gen_01_softClipValR_value = 0;
+    gen_01_hardClipValL_value = 0;
+    gen_01_hardClipValR_value = 0;
+    gen_01_superhardClipValL_value = 0;
+    gen_01_superhardClipValR_value = 0;
+    gen_01_change_4_prev = 0;
+    gen_01_change_6_prev = 0;
     param_01_lastValue = 0;
     param_02_lastValue = 0;
     param_03_lastValue = 0;
     param_04_lastValue = 0;
     param_05_lastValue = 0;
     param_06_lastValue = 0;
+    param_07_lastValue = 0;
+    param_08_lastValue = 0;
+    param_09_lastValue = 0;
+    ctlin_01_status = 0;
+    ctlin_01_byte1 = -1;
+    ctlin_01_inchan = 0;
+    ctlin_02_status = 0;
+    ctlin_02_byte1 = -1;
+    ctlin_02_inchan = 0;
+    ctlin_03_status = 0;
+    ctlin_03_byte1 = -1;
+    ctlin_03_inchan = 0;
+    ctlin_04_status = 0;
+    ctlin_04_byte1 = -1;
+    ctlin_04_inchan = 0;
+    ctlin_05_status = 0;
+    ctlin_05_byte1 = -1;
+    ctlin_05_inchan = 0;
+    ctlin_06_status = 0;
+    ctlin_06_byte1 = -1;
+    ctlin_06_inchan = 0;
+    ctlin_07_status = 0;
+    ctlin_07_byte1 = -1;
+    ctlin_07_inchan = 0;
+    ctlin_08_status = 0;
+    ctlin_08_byte1 = -1;
+    ctlin_08_inchan = 0;
+    ctlin_09_status = 0;
+    ctlin_09_byte1 = -1;
+    ctlin_09_inchan = 0;
     globaltransport_tempo = nullptr;
-    globaltransport_tempoNeedsReset = false;
-    globaltransport_lastTempo = 120;
     globaltransport_state = nullptr;
-    globaltransport_stateNeedsReset = false;
-    globaltransport_lastState = 0;
-    globaltransport_beatTimeChanges = { 0, 0 };
-    globaltransport_timeSignatureChanges = { 4, 4, 0 };
-    globaltransport_notify = false;
-    globaltransport_setupDone = false;
     stackprotect_count = 0;
     _voiceIndex = 0;
     _noteNumber = 0;
@@ -3107,19 +3866,80 @@ void assign_defaults()
     number p_01_target;
     number gen_01_in1;
     number gen_01_in2;
-    number gen_01_Mix;
-    number gen_01_clipType;
-    number gen_01_clipNeg;
     number gen_01_clipPos;
+    number gen_01_clipNeg;
+    number gen_01_clipType;
+    number gen_01_feedCoe_up;
+    number gen_01_feedCoe_down;
+    number gen_01_foldMode;
+    number gen_01_Mix;
     number param_01_value;
     number param_02_value;
     number param_03_value;
     number param_04_value;
     number param_05_value;
     number param_06_value;
+    number param_07_value;
+    number param_08_value;
+    number param_09_value;
+    number ctlin_01_input;
+    number ctlin_01_controller;
+    number ctlin_01_channel;
+    number expr_01_in1;
+    number expr_01_in2;
+    number expr_01_out1;
+    number ctlin_02_input;
+    number ctlin_02_controller;
+    number ctlin_02_channel;
+    number expr_02_in1;
+    number expr_02_in2;
+    number expr_02_out1;
+    number ctlin_03_input;
+    number ctlin_03_controller;
+    number ctlin_03_channel;
+    number expr_03_in1;
+    number expr_03_in2;
+    number expr_03_out1;
+    number ctlin_04_input;
+    number ctlin_04_controller;
+    number ctlin_04_channel;
+    number expr_04_in1;
+    number expr_04_in2;
+    number expr_04_out1;
+    number ctlin_05_input;
+    number ctlin_05_controller;
+    number ctlin_05_channel;
+    number expr_05_in1;
+    number expr_05_in2;
+    number expr_05_out1;
+    number ctlin_06_input;
+    number ctlin_06_controller;
+    number ctlin_06_channel;
+    number expr_06_in1;
+    number expr_06_in2;
+    number expr_06_out1;
+    number ctlin_07_input;
+    number ctlin_07_controller;
+    number ctlin_07_channel;
+    number expr_07_in1;
+    number expr_07_in2;
+    number expr_07_out1;
+    number ctlin_08_input;
+    number ctlin_08_controller;
+    number ctlin_08_channel;
+    number expr_08_in1;
+    number expr_08_in2;
+    number expr_08_out1;
+    number ctlin_09_input;
+    number ctlin_09_controller;
+    number ctlin_09_channel;
+    number expr_09_in1;
+    number expr_09_in2;
+    number expr_09_out1;
     MillisecondTime _currentTime;
-    SampleIndex audioProcessSampleCount;
-    SampleIndex sampleOffsetIntoNextAudioBuffer;
+    ENGINE _internalEngine;
+    UInt64 audioProcessSampleCount;
+    Index sampleOffsetIntoNextAudioBuffer;
     signal zeroBuffer;
     signal dummyBuffer;
     SampleValue * signals[2];
@@ -3128,48 +3948,83 @@ void assign_defaults()
     Index maxvs;
     number sr;
     number invsr;
+    number gen_01_softClipValL_value;
+    number gen_01_softClipValR_value;
+    number gen_01_hardClipValL_value;
+    number gen_01_hardClipValR_value;
+    number gen_01_superhardClipValL_value;
+    number gen_01_superhardClipValR_value;
+    number gen_01_change_4_prev;
+    number gen_01_change_6_prev;
     number param_01_lastValue;
     number param_02_lastValue;
     number param_03_lastValue;
     number param_04_lastValue;
     number param_05_lastValue;
     number param_06_lastValue;
+    number param_07_lastValue;
+    number param_08_lastValue;
+    number param_09_lastValue;
+    Int ctlin_01_status;
+    Int ctlin_01_byte1;
+    Int ctlin_01_inchan;
+    Int ctlin_02_status;
+    Int ctlin_02_byte1;
+    Int ctlin_02_inchan;
+    Int ctlin_03_status;
+    Int ctlin_03_byte1;
+    Int ctlin_03_inchan;
+    Int ctlin_04_status;
+    Int ctlin_04_byte1;
+    Int ctlin_04_inchan;
+    Int ctlin_05_status;
+    Int ctlin_05_byte1;
+    Int ctlin_05_inchan;
+    Int ctlin_06_status;
+    Int ctlin_06_byte1;
+    Int ctlin_06_inchan;
+    Int ctlin_07_status;
+    Int ctlin_07_byte1;
+    Int ctlin_07_inchan;
+    Int ctlin_08_status;
+    Int ctlin_08_byte1;
+    Int ctlin_08_inchan;
+    Int ctlin_09_status;
+    Int ctlin_09_byte1;
+    Int ctlin_09_inchan;
     signal globaltransport_tempo;
-    bool globaltransport_tempoNeedsReset;
-    number globaltransport_lastTempo;
     signal globaltransport_state;
-    bool globaltransport_stateNeedsReset;
-    number globaltransport_lastState;
-    list globaltransport_beatTimeChanges;
-    list globaltransport_timeSignatureChanges;
-    bool globaltransport_notify;
-    bool globaltransport_setupDone;
     number stackprotect_count;
     Index _voiceIndex;
     Int _noteNumber;
     Index isMuted;
     indexlist paramInitIndices;
     indexlist paramInitOrder;
-    RNBOSubpatcher_04* p_01;
-
+    RNBOSubpatcher_04 p_01;
+    bool _isInitialized = false;
 };
 
-PatcherInterface* creaternbomatic()
+static PatcherInterface* creaternbomatic()
 {
-    return new rnbomatic();
+    return new rnbomatic<EXTERNALENGINE>();
 }
 
 #ifndef RNBO_NO_PATCHERFACTORY
-
-extern "C" PatcherFactoryFunctionPtr GetPatcherFactoryFunction(PlatformInterface* platformInterface)
+extern "C" PatcherFactoryFunctionPtr GetPatcherFactoryFunction()
 #else
-
-extern "C" PatcherFactoryFunctionPtr rnbomaticFactoryFunction(PlatformInterface* platformInterface)
+extern "C" PatcherFactoryFunctionPtr rnbomaticFactoryFunction()
 #endif
-
 {
-    Platform::set(platformInterface);
     return creaternbomatic;
+}
+
+#ifndef RNBO_NO_PATCHERFACTORY
+extern "C" void SetLogger(Logger* logger)
+#else
+void rnbomaticSetLogger(Logger* logger)
+#endif
+{
+    console = logger;
 }
 
 } // end RNBO namespace

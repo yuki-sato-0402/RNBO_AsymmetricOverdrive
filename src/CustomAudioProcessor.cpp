@@ -10,6 +10,7 @@ CustomAudioProcessor::CustomAudioProcessor()
                   .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
                   #endif
                   ),
+visualizer(1),                  
 parameters(*this, nullptr, juce::Identifier("PARAMETERS"),
     juce::AudioProcessorValueTreeState::ParameterLayout {
       std::make_unique<juce::AudioParameterFloat>(ParameterID { "preLowcut",  1}, "preLowcut",
@@ -23,38 +24,42 @@ parameters(*this, nullptr, juce::Identifier("PARAMETERS"),
       std::make_unique<juce::AudioParameterFloat>(ParameterID { "clipPos",  1}, "clipPos",
       juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f),
       std::make_unique<juce::AudioParameterFloat>(ParameterID { "Mix",  1}, "Mix",
-      juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f)
-
+      juce::NormalisableRange<float>(0.f, 100.f, 0.01f),0.f),
+      std::make_unique<juce::AudioParameterFloat>(ParameterID { "feedCoe_up",  1}, "feedCoe_up",
+      juce::NormalisableRange<float>(0.f, 0.99f, 0.01f),0.f),
+      std::make_unique<juce::AudioParameterFloat>(ParameterID { "feedCoe_down",  1}, "feedCoe_down",
+      juce::NormalisableRange<float>(0.f, 0.99f, 0.01f),0.f),
+      std::make_unique<juce::AudioParameterFloat>(ParameterID { "foldMode",  1}, "foldMode",
+      juce::NormalisableRange<float>(0, 1, 1, 1), 0)
     }
   )
 {
-
  
   for (RNBO::ParameterIndex i = 0; i < rnboObject.getNumParameters(); ++i){
     RNBO::ParameterInfo info;
     rnboObject.getParameterInfo (i, &info);
 
     if (info.visible){
-      auto paramID = juce::String (rnboObject.getParameterId (i));
-      std::cout << "Parameter Index: " << i << std::endl;
-      std::cout << "Min Value: " << info.min << std::endl;
-      std::cout << "Max Value: " << info.max << std::endl;
+        auto paramID = juce::String (rnboObject.getParameterId (i));
+        std::cout << "Parameter Index: " << i << std::endl;
+        std::cout << "Min Value: " << info.min << std::endl;
+        std::cout << "Max Value: " << info.max << std::endl;
 
-      // Each apvts parameter id and range must be the same as the rnbo param object's.
-      // If you hit this assertion then you need to fix the incorrect id in ParamIDs.h.
-      jassert (parameters.getParameter (paramID) != nullptr);
+        // Each apvts parameter id and range must be the same as the rnbo param object's.
+        // If you hit this assertion then you need to fix the incorrect id in ParamIDs.h.
+        jassert (parameters.getParameter (paramID) != nullptr);
 
-      // If you hit these assertions then you need to fix the incorrect apvts
-      // parameter range in createParameterLayout().
-      jassert (std::abs (info.min - parameters.getParameterRange (paramID).start) < 1e-5f);
-      jassert (std::abs (info.max - parameters.getParameterRange (paramID).end) < 1e-5f);
+        // If you hit these assertions then you need to fix the incorrect apvts
+        // parameter range in createParameterLayout().
+        jassert (std::abs (info.min - parameters.getParameterRange (paramID).start) < 1e-5f);
+        jassert (std::abs (info.max - parameters.getParameterRange (paramID).end) < 1e-5f);
 
-      apvtsParamIdToRnboParamIndex[paramID] = i;
-    
+        apvtsParamIdToRnboParamIndex[paramID] = i;
+        
 
-    parameters.addParameterListener(paramID, this);
-    rnboObject.setParameterValue(i, parameters.getRawParameterValue(paramID)->load());  // RNBO に適用
-      
+        parameters.addParameterListener(paramID, this);
+        rnboObject.setParameterValue(i, parameters.getRawParameterValue(paramID)->load());  // RNBO に適用
+        
     } 
   }
 
@@ -63,6 +68,10 @@ parameters(*this, nullptr, juce::Identifier("PARAMETERS"),
 void CustomAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     rnboObject.prepareToProcess (sampleRate, static_cast<size_t> (samplesPerBlock));
+
+    visualizer.setRepaintRate(30);
+    visualizer.setBufferSize(samplesPerBlock); 
+    visualizer.clear();
 }
  
 void CustomAudioProcessor::releaseResources()
@@ -79,6 +88,7 @@ void CustomAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
                       buffer.getArrayOfWritePointers(), static_cast<RNBO::Index>(buffer.getNumChannels()),
                       static_cast<RNBO::Index> (buffer.getNumSamples())
     );     
+    visualizer.pushBuffer(buffer);
 }
 
 void CustomAudioProcessor::parameterChanged(const juce::String& parameterID, float newValue)

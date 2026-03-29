@@ -9,13 +9,22 @@
         "Pre-EQ~": {}
       },
       "clipNeg": {
-        "value": 99
+        "value": 0
       },
       "clipPos": {
-        "value": 91
+        "value": 0
       },
       "clipType": {
-        "value": 2
+        "value": 0
+      },
+      "feedCoe_down": {
+        "value": 0.5
+      },
+      "feedCoe_up": {
+        "value": 0.5
+      },
+      "foldMode": {
+        "value": 0
       },
       "preHighcut": {
         "value": 0
