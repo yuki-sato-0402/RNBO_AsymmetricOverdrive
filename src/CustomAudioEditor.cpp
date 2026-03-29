@@ -149,7 +149,7 @@ CustomAudioEditor::CustomAudioEditor (CustomAudioProcessor& p, juce::AudioProces
     feedCoe_downSlider.setColour(juce::Slider::textBoxOutlineColourId , juce::Colours::white);
 
     addAndMakeVisible(feedCoe_downLabel);
-    feedCoe_downLabel.setText ("feedCoe_up", juce::dontSendNotification);
+    feedCoe_downLabel.setText ("feedCoe_down", juce::dontSendNotification);
     feedCoe_downLabel.setJustificationType(juce::Justification::centred);
     
     addAndMakeVisible(foldModeButton);
